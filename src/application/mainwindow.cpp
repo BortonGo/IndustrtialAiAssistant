@@ -11,17 +11,80 @@
 #include <QHBoxLayout>
 #include <QStatusBar>
 #include <QStackedWidget>
+#include <QIcon>
 
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QDebug>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <dwmapi.h>
+#endif
+
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::MainWindow)
 {
+    // Main Window
     ui->setupUi(this);
+    setWindowTitle("Local Assistant");
+    setWindowIcon(QIcon(":/icons/logo-dark.svg"));
 
+#ifdef Q_OS_WIN
+    // Black title.
+    constexpr DWORD useImmersiveDarkMode = 20;
+    const BOOL darkMode = TRUE;
+    const HRESULT titleBarResult = DwmSetWindowAttribute(
+        reinterpret_cast<HWND>(winId()), useImmersiveDarkMode,
+        &darkMode, sizeof(darkMode));
+    if (FAILED(titleBarResult)) {
+        qWarning() << "Dark title bar is not supported:" << titleBarResult;
+    }
+#endif
+
+    resize(1200, 800);
+    setMinimumSize(800, 550);
+
+    ui->menuBar->hide();
+    ui->mainToolBar->hide();
+
+    setStyleSheet(
+        "QMainWindow { background-color: #18191C; }"
+
+        "QStatusBar {"
+        " background-color: #18191C;"
+        " color: #A6ABB6;"
+        " border: none;"
+        "}"
+        "QStatusBar::item { border: none; }"
+
+        "QScrollBar:vertical {"
+        " background: #18191C;"
+        " width: 10px;"
+        " margin: 0px;"
+        "}"
+        "QScrollBar::handle:vertical {"
+        " background: #454953;"
+        " min-height: 30px;"
+        " border-radius: 5px;"
+        "}"
+        "QScrollBar::handle:vertical:hover {"
+        " background: #626875;"
+        "}"
+        "QScrollBar::add-line:vertical,"
+        "QScrollBar::sub-line:vertical {"
+        " height: 0px;"
+        "}"
+        "QScrollBar::add-page:vertical,"
+        "QScrollBar::sub-page:vertical {"
+        " background: none;"
+        "}"
+    );
+
+    statusBar()->setSizeGripEnabled(false);
+
+    // Other widgets
     auto* service = new AssistantService(this);
     auto* chatManager = new ChatManager(service, this);
     auto* chatListModel = new ChatListModel(chatManager, chatManager);
@@ -29,8 +92,6 @@ MainWindow::MainWindow(QWidget *parent) :
                 service->documentManager(),
                 service->documentManager());
 
-    resize(1200, 800);
-    setMinimumSize(800, 550);
 
     centralWidget()->setObjectName("mainSurface");
     centralWidget()->setStyleSheet(

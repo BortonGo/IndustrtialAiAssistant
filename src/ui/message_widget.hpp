@@ -1,11 +1,9 @@
-#ifndef MESSAGE_WIDGET_H
-#define MESSAGE_WIDGET_H
+#pragma once
 
+#include "chat/chat.hpp"
+#include <QWidget>
 
-class message_widget
-{
+class MessageWidget : public QWidget {
 public:
-    message_widget();
+    explicit MessageWidget(const ChatMessage& message, QWidget* parent = nullptr);
 };
-
-#endif // MESSAGE_WIDGET_H

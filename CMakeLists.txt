@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/src/ui")
 
 find_package(Qt5 REQUIRED COMPONENTS Widgets Network)
@@ -51,6 +52,9 @@ add_executable(IndustrialAiAssistant main.cpp
     src/ui/sidebar_widget.cpp
     src/ui/chat_widget.hpp
     src/ui/chat_widget.cpp
+    src/ui/message_widget.hpp
+    src/ui/message_widget.cpp
+    resources/resources.qrc
 )
 
 target_include_directories(IndustrialAiAssistant PRIVATE
@@ -64,3 +68,12 @@ target_include_directories(IndustrialAiAssistant PRIVATE
 )
 
 target_link_libraries(IndustrialAiAssistant PRIVATE Qt5::Widgets Qt5::Network)
+
+if(WIN32)
+    target_link_libraries(IndustrialAiAssistant PRIVATE dwmapi)
+    enable_language(RC)
+    target_sources(IndustrialAiAssistant PRIVATE resources/app.rc)
+    target_include_directories(IndustrialAiAssistant PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources"
+    )
+endif()

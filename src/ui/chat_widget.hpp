@@ -6,16 +6,22 @@
 #include <QString>
 #include <QTextEdit>
 #include <QLabel>
+#include <QScrollArea>
+#include <QVBoxLayout>
+#include <QStackedWidget>
 
 #include <vector>
 
 class ChatWidget : public QWidget {
     Q_OBJECT
 
-    QTextEdit* textAnswer_;
+    QScrollArea* messagesScroll_;
+    QVBoxLayout* messagesLayout_;
     QTextEdit* textContext_;
     QLabel* notificationLabel_;
     MessageComposer* composer_;
+    QStackedWidget* conversationPages_;
+    QWidget* welcomePage_;
 public:
     explicit ChatWidget(QWidget* parent = nullptr);
 

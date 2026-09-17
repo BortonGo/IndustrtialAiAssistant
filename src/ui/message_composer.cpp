@@ -3,21 +3,31 @@
 #include <QTextEdit>
 #include <QPushButton>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
 
 MessageComposer::MessageComposer(QWidget* parent) : QWidget(parent) {
+    setObjectName("messageComposer");
+    setAttribute(Qt::WA_StyledBackground, true);
+    setStyleSheet(
+        "QWidget#messageComposer {"
+        " background-color: #24262B;"
+        " border: 1px solid #393C44;"
+        " border-radius: 18px;"
+        "}"
+    );
+
     textQuestion_ = new QTextEdit;
 
     textQuestion_->setPlaceholderText("Ask your question");
     textQuestion_->setStyleSheet(
-                "QTextEdit {"
-                " background-color: #24262B;"
-                " color: #E8E8ED;"
-                " border: 1px solid #393C44;"
-                " border-radius: 14px;"
-                " padding: 12px;"
-                " font-size: 18px;"
-                "}"
-                );
+        "QTextEdit {"
+        " background-color: transparent;"
+        " color: #E8E8ED;"
+        " border: none;"
+        " padding: 0px;"
+        " font-size: 16px;"
+        "}"
+    );
     textQuestion_->setMinimumHeight(80);
     textQuestion_->setMaximumHeight(110);
 
@@ -57,13 +67,20 @@ MessageComposer::MessageComposer(QWidget* parent) : QWidget(parent) {
                 "QPushButton:hover { background-color: #494D57; }"
                 );
 
-    auto *hl = new QHBoxLayout(this);
-    hl->setContentsMargins(0, 0, 0, 0);
-    hl->setSpacing(16);
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(16, 12, 16, 12);
+    layout->setSpacing(8);
 
-    hl->addWidget(btnLoadDoc);
-    hl->addWidget(textQuestion_);
-    hl->addWidget(btnAsk);
+    auto* buttonsLayout = new QHBoxLayout;
+    buttonsLayout->setContentsMargins(0, 0, 0, 0);
+    buttonsLayout->setSpacing(8);
+
+    buttonsLayout->addWidget(btnLoadDoc);
+    buttonsLayout->addStretch();
+    buttonsLayout->addWidget(btnAsk);
+
+    layout->addWidget(textQuestion_);
+    layout->addLayout(buttonsLayout);
 
     connect(btnLoadDoc, &QPushButton::clicked,
             this, &MessageComposer::documentUploadRequested);
