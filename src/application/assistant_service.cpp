@@ -35,6 +35,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
             this, [this](const QString &message) {
         const bool wasQuerying = state_ == AssistantState::Querying;
         if (state_ == AssistantState::Indexing) {
+            documentManager_->setDocumentStatus(indexingDocumentId_, DocumentStatus::Error);
             vectorStore_.removeDocument(indexingDocumentId_);
             indexingDocumentId_.clear();
         }
@@ -92,6 +93,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
         try {
             vectorStore_.add(entry);
         } catch (const std::invalid_argument &e) {
+            documentManager_->setDocumentStatus(indexingDocumentId_, DocumentStatus::Error);
             vectorStore_.removeDocument(indexingDocumentId_);
             indexingDocumentId_.clear();
             state_ = AssistantState::Idle;
@@ -102,6 +104,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
         ++nextChunkIndex_;
         qDebug() << nextChunkIndex_ << "/" << chunks_.size();
         if (nextChunkIndex_ >= chunks_.size()) {
+            documentManager_->setDocumentStatus(indexingDocumentId_, DocumentStatus::Ready);
             state_ = AssistantState::Idle;
             indexingDocumentId_.clear();
             qDebug() << "Indexing finished";
@@ -208,6 +211,7 @@ bool AssistantService::startDocumentIndexing(const QString& documentId) {
     try {
         chunks = DocumentChunker::chunkDocument(*d, 500, 100);
     } catch (const std::invalid_argument &e) {
+        documentManager_->setDocumentStatus(documentId, DocumentStatus::Error);
         emit errorOccurred(QString::fromUtf8(e.what()));
         return false;
     }
@@ -222,10 +226,12 @@ bool AssistantService::startDocumentIndexing(const QString& documentId) {
     emit documentLoaded(QFileInfo(d->sourcePath).fileName(), d->text.size());
 
     if (chunks_.empty()) {
+        documentManager_->setDocumentStatus(documentId, DocumentStatus::Error);
         emit errorOccurred("Vector chunks_ is empty");
         return false;
     }
     indexingDocumentId_ = documentId;
+    documentManager_->setDocumentStatus(indexingDocumentId_, DocumentStatus::Indexing);
     vectorStore_.removeDocument(indexingDocumentId_);
     nextChunkIndex_ = 0;
     pendingChunk_ = chunks_[nextChunkIndex_];

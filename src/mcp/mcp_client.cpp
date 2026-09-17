@@ -192,7 +192,7 @@ MCPClient::MCPClient(QObject* parent) : QObject(parent) {
                     qDebug() << "MCP polling resumed";
                 }
 
-                systemStatusReady(cpu_percent, memory_percent);
+                emit systemStatusReady(cpu_percent, memory_percent);
             }
         }
     });

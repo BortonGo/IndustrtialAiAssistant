@@ -45,3 +45,25 @@ const Document* DocumentManager::documentAt(int row) const {
     }
     return &documents_[row];
 }
+
+bool DocumentManager::setDocumentStatus(const QString& documentId, const DocumentStatus& status) {
+    auto* d = find(documentId);
+    if (!d) {
+        return false;
+    }
+    if (d->status == status) {
+        return true;
+    }
+    d->status = status;
+    emit documentStatusChanged(documentId);
+    return true;
+}
+
+Document* DocumentManager::find(const QString& documentId) {
+    for (auto& d : documents_) {
+        if (d.id == documentId) {
+            return &d;
+        }
+    }
+    return nullptr;
+}

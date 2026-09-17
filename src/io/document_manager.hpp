@@ -21,8 +21,14 @@ public:
     int documentCount() const;
     const Document* documentAt(int row) const;
 
+    bool setDocumentStatus(const QString& documentId, const DocumentStatus& status);
+
 signals:
     void errorOccurred(const QString &message);
     void documentLoaded(const QString &documentId);
     void documentAboutToBeAdded(int row);
+    void documentStatusChanged(const QString& documentId);
+
+private:
+    Document* find(const QString& documentId);
 };

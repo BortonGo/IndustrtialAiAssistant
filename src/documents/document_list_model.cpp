@@ -15,6 +15,18 @@ DocumentListModel::DocumentListModel(DocumentManager* manager, QObject* parent)
         endInsertRows();
     });
 
+    connect(manager_, &DocumentManager::documentStatusChanged,
+            this, [this](const QString& documentId) {
+        for (int row = 0, sz = rowCount(); row < sz; ++row) {
+            auto* document = manager_->documentAt(row);
+            if (document->id == documentId) {
+                const QModelIndex idx = index(row, 0);
+                emit dataChanged(idx, idx, {Qt::DisplayRole});
+                break;
+            }
+        }
+    });
+
 }
 
 int DocumentListModel::rowCount(const QModelIndex& parent) const {
@@ -35,7 +47,7 @@ QVariant DocumentListModel::data(const QModelIndex& index, int role) const {
         return {};
     }
     if (role == Qt::DisplayRole) {
-        return QFileInfo(document->sourcePath).fileName();
+        return QFileInfo(document->sourcePath).fileName() + " · " + Document::statusToQString(document->status);
     } else if (role == Qt::UserRole) {
         return document->id;
     } else if (role == Qt::ToolTipRole) {
