@@ -1,0 +1,53 @@
+# Local IDE settings
+/.idea/
+*.pro.user*
+CMakeLists.txt.user*
+/CMakeUserPresets.json
+/qt-env.bat
+/.clang-format
+/.editorconfig
+
+# Build directories
+/cmake-build-*/
+/build/
+/build-*/
+/debug/
+/release/
+
+/docs
+*.txt
+!requirements.txt
+!CMakeLists.txt
+
+# In-source CMake and qmake output
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/compile_commands.json
+/build.ninja
+/rules.ninja
+/.ninja_deps
+/.ninja_log
+/Makefile
+/Makefile.*
+/.qmake.stash
+/.qmake.cache
+/AngleTableXml_autogen/
+/ui_*.h
+/moc_*.cpp
+/qrc_*.cpp
+
+# Compiled files
+*.o
+*.obj
+*.exe
+*.pdb
+
+
+# Python
+.venv/
+venv/
+
+__pycache__/
+*.py[cod]
+*.pyo
