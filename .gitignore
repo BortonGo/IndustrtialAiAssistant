@@ -51,3 +51,7 @@ venv/
 __pycache__/
 *.py[cod]
 *.pyo
+
+# diagrams ang local readme
+/architecture/README.md
+/architecture/rendered/
