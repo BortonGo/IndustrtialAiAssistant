@@ -14,10 +14,6 @@ CMakeLists.txt.user*
 /debug/
 /release/
 
-/recources/
-/resources/app.rc
-/resources/resources.qrc
-/resources/icons/
 /docs
 *.txt
 !requirements.txt
