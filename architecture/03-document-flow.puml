@@ -1,0 +1,96 @@
+@startuml
+!include theme.iuml
+title Целевой сценарий — загрузка, индексация и восстановление документов
+autonumber
+hide footbox
+skinparam maxMessageSize 240
+
+actor Пользователь as User
+participant "Qt UI" as UI
+participant AssistantService as Service
+participant DocumentManager as Docs
+participant DocumentLoader as Loader
+participant DocumentChunker as Chunker
+participant EmbeddingClient as Embed
+participant "Сервер embeddings" as Server
+participant "DocumentRepository\nSQLite [план]" as Storage #493823
+participant InMemoryVectorStore as Index
+
+User -> UI : выбрать файл или папку
+UI -> Service : загрузить пути
+loop для каждого поддерживаемого файла
+    Service -> Docs : загрузить документ
+    Docs -> Docs : нормализовать путь; проверить дубликат
+    alt такой документ уже загружен
+        Docs --> UI : пропустить; сообщить пользователю
+    else новый документ
+        Docs -> Loader : прочитать / извлечь текст
+        alt файл не прочитан или текст пуст
+            Loader --> Docs : ошибка
+            Docs --> UI : ошибка конкретного файла
+        else текст получен
+            Loader --> Docs : текст + сведения об источнике
+            Docs -> Storage : сохранить UUID, путь, hash, текст, Pending
+            alt запись не удалась
+                Storage --> Docs : ошибка
+                Docs --> UI : документ не добавлен
+            else commit успешен
+                Storage --> Docs : commit
+                Docs --> UI : добавить строку документа
+                Docs --> Service : documentLoaded(id)
+                Service -> Service : добавить ID в очередь
+            end
+        end
+    end
+end
+
+== Последовательная обработка очереди, когда сервис свободен ==
+loop пока в очереди есть документы
+    Service -> Docs : статус Indexing
+    Docs -> Storage : сохранить статус
+    Docs --> UI : documentStatusChanged(id)
+    Service -> Chunker : текст → чанки + позиции
+    Chunker --> Service : набор чанков
+    loop для каждого чанка, пока нет ошибки
+        Service -> Embed : requestEmbedding(chunk.text)
+        Embed -> Server : POST /v1/embeddings
+        Server --> Embed : embedding либо ошибка
+        Embed --> Service : результат
+        Service -> Service : проверить размерность / числа;\nнакопить результат вне БД-транзакции
+    end
+    alt все чанки и embeddings получены
+        Service -> Storage : короткая транзакция: чанки, embeddings,\nпрофиль, статус Ready
+        alt commit успешен
+            Storage --> Service : commit
+            Service -> Index : опубликовать полный набор документа
+            Service -> Docs : обновить состояние в памяти: Ready
+            Docs --> UI : documentStatusChanged(id)
+        else ошибка сохранения
+            Storage --> Service : rollback
+            Service -> Docs : Error + причина
+            Docs --> UI : показать ошибку; в индекс не добавлять
+        end
+    else ошибка чанкинга / embedding
+        Service -> Service : прекратить текущий документ;\nотбросить временный неполный набор
+        Service -> Docs : Error + причина
+        Docs -> Storage : сохранить Error, если БД доступна
+        Docs --> UI : documentStatusChanged(id)
+    end
+    Service -> Service : перейти к следующему ID
+end
+
+== При следующем запуске приложения ==
+Service -> Storage : загрузить Ready и embeddings активного профиля
+Storage --> Service : сохранённый индекс
+Service -> Index : проверить и восстановить в RAM
+Service -> Docs : загрузить список; Pending / Indexing\nпосле прерывания вернуть в очередь
+Docs --> UI : показать документы и состояния
+
+legend bottom
+  БД, папки, PDF/DOCX, UUID документов и атомарная публикация — план.
+  Сегодня ID документа — путь; частичные embeddings добавляются сразу в RAM.
+  При первой ошибке embedding цикл текущего документа прерывается.
+  При ошибке БД статус Error показывается в памяти, даже если сохранить его нельзя.
+  Обновление изменённого файла — отдельное явное действие, не молчаливый дубликат.
+endlegend
+@enduml

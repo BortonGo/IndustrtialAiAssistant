@@ -1,0 +1,73 @@
+@startuml
+!include theme.iuml
+title Local Assistant — общая архитектура итоговой локальной версии
+left to right direction
+skinparam nodesep 35
+skinparam ranksep 45
+
+actor "Пользователь" as User
+
+package "Приложение C++ / Qt" {
+    component "Интерфейс Qt\nMainWindow + виджеты\n+ модели списков" as UI
+    component "ChatManager\nчаты, сообщения, привязка ответа" as Chat
+    component "AssistantService\nочередь, режим запроса,\nсбор контекста и ошибки" as Service
+    component "DocumentManager\nобщая библиотека документов\nи статусы индексации" as Docs
+    component "DocumentLoader\nTXT сейчас; PDF / DOCX — план" as Loader
+    component "DocumentChunker\nтекст → фрагменты" as Chunker
+    component "InMemoryVectorStore\nпоиск похожих чанков в RAM" as Index
+    component "EmbeddingClient\nтекст → вектор" as Embed
+    component "ILLMClient / HTTP-клиент\nсейчас LMStudioLLMClient" as LLM
+    component "MCPClient\nопрос и снимок показателей" as MCP
+
+    package "План: хранение через репозитории" #493823 {
+        component "ChatRepository\nчаты, сообщения, контекст запроса" as ChatRepo #493823
+        component "DocumentRepository\nдокументы, чанки, embeddings" as DocRepo #493823
+    }
+    component "План: LocalModelServer\nQProcess, запуск, готовность, stop" as Launcher #493823
+}
+
+package "Отдельные локальные процессы" {
+    component "Сервер языковой модели\nLM Studio → llama-server\nязыковая GGUF-модель" as LLMServer
+    component "Сервер embeddings\nLM Studio → llama-server\nembedding GGUF-модель" as EmbedServer
+    component "Python MCP server\nget_system_status / psutil\nCPU и RAM компьютера" as MCPServer
+}
+database "План: SQLite\nlocal-assistant.db" as DB
+
+User -[#5B8DEF]-> UI : 1. вопрос / документ
+UI -[#5B8DEF]-> Chat : 2. отправить сообщение
+Chat -[#5B8DEF]-> Service : 3. вопрос + история + режим
+Service -[#5B8DEF]-> LLM : 4. подготовленный контекст
+LLM -[#5B8DEF]-> LLMServer : 5. HTTP /v1/chat/completions
+LLMServer -[#68C99A,dashed]-> LLM : 6. ответ / ошибка
+LLM -[#68C99A,dashed]-> Service : 7. результат
+Service -[#68C99A,dashed]-> Chat : 8. ответ нужному запросу
+Chat -[#68C99A,dashed]-> UI : 9. обновить сообщения
+UI -[#68C99A,dashed]-> User : 10. ответ и источники
+
+UI --> Service : загрузить файл / папку
+Service --> Docs : чтение и статусы
+Docs --> Loader : извлечь текст
+Service --> Chunker : создать чанки
+Service --> Embed : embeddings чанков / вопроса
+Embed --> EmbedServer : HTTP /v1/embeddings
+Service --> Index : добавить / искать / удалить
+Service --> MCP : использовать свежий снимок
+MCP --> MCPServer : QProcess + JSON-RPC / stdio
+
+Chat ..> ChatRepo : сохранить / восстановить
+Docs ..> DocRepo : метаданные и текст
+Service ..> DocRepo : индекс и восстановление RAM
+ChatRepo ..> DB : SQL / транзакции
+DocRepo ..> DB : SQL / транзакции
+UI ..> Launcher : запуск и состояние сервера
+Launcher ..> LLMServer : QProcess
+Launcher ..> EmbedServer : QProcess; отдельный порт
+
+legend bottom
+  Синие стрелки — вопрос; зелёные пунктирные — ответ.
+  Обычные стрелки — использование компонентов, не порядок вызовов.
+  Коричневые блоки — новые компоненты, которых ещё нет в коде.
+  SQLite, история в запросе, режимы, папки, PDF/DOCX и llama.cpp — план.
+  Документы общие для чатов. UI не выполняет SQL и не вызывает модель напрямую.
+endlegend
+@enduml

@@ -1,0 +1,133 @@
+@startuml
+!include theme.iuml
+title Проект SQLite — чаты, документы, embeddings и источники ответов
+hide circle
+skinparam linetype ortho
+
+entity "chats\nЧаты" as Chats {
+    * id : TEXT <<PK, UUID>>
+    --
+    * title : TEXT
+    * created_at : TEXT <<UTC>>
+    * updated_at : TEXT <<UTC>>
+}
+
+entity "messages\nСообщения и состояние запроса" as Messages {
+    * id : TEXT <<PK, UUID>>
+    --
+    * chat_id : TEXT <<FK>>
+    * position : INTEGER
+    * role : TEXT <<user / assistant>>
+    * text : TEXT
+    * created_at : TEXT <<UTC>>
+    * status : TEXT <<pending / complete / failed>>
+    reply_to_message_id : TEXT <<FK, nullable>>
+    request_mode : TEXT <<nullable>>
+    generation_model : TEXT <<nullable>>
+    error_text : TEXT <<nullable>>
+    --
+    UNIQUE(chat_id, position)
+}
+
+entity "message_contexts\nСнимок контекста вопроса" as Contexts {
+    * id : TEXT <<PK, UUID>>
+    --
+    * request_message_id : TEXT <<FK messages>>
+    * position : INTEGER
+    * kind : TEXT <<document / mcp>>
+    document_id : TEXT <<FK, nullable>>
+    chunk_id : TEXT <<FK, nullable>>
+    * source_name : TEXT
+    * content_snapshot : TEXT
+    location_snapshot : TEXT <<nullable>>
+    similarity : REAL <<nullable>>
+    captured_at : TEXT <<UTC, nullable>>
+    * created_at : TEXT <<UTC>>
+    --
+    UNIQUE(request_message_id, position)
+}
+
+entity "documents\nОбщая библиотека" as Documents {
+    * id : TEXT <<PK, UUID>>
+    --
+    * source_path : TEXT
+    * path_key : TEXT <<UNIQUE>>
+    * title : TEXT
+    * format : TEXT <<txt / pdf / docx>>
+    * content_hash : TEXT
+    * extracted_text : TEXT
+    * status : TEXT <<Pending / Indexing / Ready / Error>>
+    * pipeline_version : TEXT
+    * chunk_size : INTEGER
+    * chunk_overlap : INTEGER
+    * created_at : TEXT <<UTC>>
+    * updated_at : TEXT <<UTC>>
+    error_text : TEXT <<nullable>>
+}
+
+entity "chunks\nФрагменты текста" as Chunks {
+    * id : TEXT <<PK, UUID>>
+    --
+    * document_id : TEXT <<FK>>
+    * position : INTEGER
+    * text : TEXT
+    * start_offset : INTEGER
+    page_number : INTEGER <<nullable>>
+    section_title : TEXT <<nullable>>
+    --
+    UNIQUE(document_id, position)
+}
+
+entity "embedding_profiles\nСовместимость векторов" as Profiles {
+    * id : TEXT <<PK, UUID>>
+    --
+    * model_name : TEXT
+    * model_sha256 : TEXT
+    * dimension : INTEGER
+    * preprocessing_version : TEXT
+    * vector_encoding : TEXT <<float64-le>>
+    --
+    UNIQUE(model_sha256, dimension,
+      preprocessing_version, vector_encoding)
+}
+
+entity "chunk_embeddings\nСохранённые векторы" as Embeddings {
+    * chunk_id : TEXT <<PK, FK>>
+    * profile_id : TEXT <<PK, FK>>
+    --
+    * vector : BLOB
+    * created_at : TEXT <<UTC>>
+}
+
+Chats ||--o{ Messages : CASCADE
+Messages |o--o{ Messages : reply_to / SET NULL
+Messages ||--o{ Contexts : CASCADE
+Documents ||--o{ Chunks : CASCADE
+Chunks ||--o{ Embeddings : CASCADE
+Profiles ||--o{ Embeddings : RESTRICT
+Documents |o--o{ Contexts : SET NULL
+Chunks |o--o{ Contexts : SET NULL
+
+note bottom of Contexts
+    Контекст принадлежит исходному user message.
+    Ответ ссылается на него через reply_to_message_id.
+    При удалении документа сохраняем копию текста,
+    имя источника и позицию; внешние ссылки обнуляем.
+    content_snapshot: текст чанка или JSON показателей MCP.
+end note
+
+note bottom of Profiles
+    Векторы сравниваются только в одном профиле.
+    Одинаковая длина не означает одинаковую модель.
+    Модель или подготовка текста изменилась → новый профиль.
+end note
+
+legend bottom
+  Все таблицы — предложение для обсуждения, БД пока не реализована.
+  * — NOT NULL; PK — первичный ключ; FK — внешний ключ.
+  || — ровно один; |o — ноль или один; o{ — ноль или много.
+  CASCADE / SET NULL / RESTRICT — правила удаления родительской записи.
+  Включать PRAGMA foreign_keys = ON для каждого соединения SQLite.
+  Индексы, CHECK, транзакции и миграции описаны в README.md.
+endlegend
+@enduml

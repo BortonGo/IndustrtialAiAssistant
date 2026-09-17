@@ -1,0 +1,62 @@
+' Общая тёмная тема. Файл подключается из диаграмм через !include.
+skinparam backgroundColor #18191C
+skinparam defaultFontName Segoe UI
+skinparam defaultFontSize 14
+skinparam defaultFontColor #ECEEF2
+skinparam titleFontColor #ECEEF2
+skinparam ArrowColor #A6ABB6
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam roundcorner 10
+skinparam component {
+    BackgroundColor #24262B
+    BorderColor #5B8DEF
+    FontColor #ECEEF2
+}
+skinparam package {
+    BackgroundColor #202126
+    BorderColor #555B68
+    FontColor #ECEEF2
+}
+skinparam database {
+    BackgroundColor #493823
+    BorderColor #E6AD65
+    FontColor #ECEEF2
+}
+skinparam class {
+    BackgroundColor #24262B
+    BorderColor #E6AD65
+    FontColor #ECEEF2
+    AttributeFontColor #ECEEF2
+}
+skinparam actor {
+    BackgroundColor #24262B
+    BorderColor #A6ABB6
+    FontColor #ECEEF2
+}
+skinparam note {
+    BackgroundColor #29323F
+    BorderColor #64748B
+    FontColor #ECEEF2
+}
+skinparam legend {
+    BackgroundColor #24262B
+    BorderColor #555B68
+    FontColor #ECEEF2
+}
+skinparam sequence {
+    ParticipantBackgroundColor #24262B
+    ParticipantBorderColor #5B8DEF
+    ParticipantFontColor #ECEEF2
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #24262B
+    ArrowColor #B8C5DB
+    GroupBackgroundColor #202126
+    GroupBodyBackgroundColor #18191C
+    GroupBorderColor #64748B
+    GroupHeaderFontColor #ECEEF2
+    GroupFontColor #ECEEF2
+    DividerBackgroundColor #29323F
+    DividerBorderColor #64748B
+    DividerFontColor #ECEEF2
+}

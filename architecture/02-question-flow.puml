@@ -1,0 +1,96 @@
+@startuml
+!include theme.iuml
+title Целевой сценарий — от вопроса пользователя до сохранённого ответа
+autonumber
+hide footbox
+skinparam maxMessageSize 240
+
+actor Пользователь as User
+participant "Qt UI\nMainWindow + ChatWidget" as UI
+participant ChatManager as Chat
+participant AssistantService as Service
+participant "ChatRepository\nSQLite [план]" as Storage #493823
+participant EmbeddingClient as Embed
+participant InMemoryVectorStore as Index
+participant MCPClient as MCP
+participant "ILLMClient\nHTTP-клиент" as LLM
+participant "Локальные серверы\nLLM / embeddings" as Models
+
+User -> UI : отправить текст
+UI -> Chat : sendMessage(text, mode)
+Chat -> Chat : проверить пустой текст / активный запрос
+Chat -> Service : проверить и зарезервировать обработку
+alt сервис занят
+    Service --> Chat : отказ
+    Chat --> UI : показать причину; сохранить текст в поле
+else запрос принят
+    Service --> Chat : requestId
+    Chat -> Storage : транзакция: создать чат при необходимости,\nсохранить user message со статусом pending
+    break ошибка записи в БД
+        Storage --> Chat : ошибка
+        Chat -> Service : освободить резервирование
+        Chat --> UI : ошибка сохранения; поле не очищать
+    end
+    Storage --> Chat : commit
+    Chat --> UI : показать вопрос; очистить поле
+    Chat -> Service : requestId, chatId, question,\nограниченная история, mode
+
+    opt режим Documents или Together
+        Service -> Embed : requestEmbedding(question)
+        Embed -> Models : POST /v1/embeddings
+        Models --> Embed : embedding
+        Embed --> Service : embeddingReady
+        Service -> Index : search(embedding, topK)\nтолько Ready и активный embedding-профиль
+        Index --> Service : чанки + оценки сходства
+    end
+    opt режим Computer или Together
+        Service -> MCP : получить последний снимок
+        MCP --> Service : данные + время либо «нет свежих данных»
+        note over MCP
+            Python-сервер опрашивается фоном.
+            Новый вызов инструмента на каждый вопрос не обязателен.
+        end note
+    end
+
+    Service -> Service : собрать инструкции, историю и контекст\nв пределах бюджета контекста модели
+    Service --> Chat : contextPrepared(requestId, snapshot)
+    Chat -> Storage : сохранить message_contexts\nдля исходного user message
+    break ошибка сохранения контекста
+        Storage --> Chat : ошибка
+        Chat -> Service : прекратить запрос и освободить очередь
+        Chat --> UI : показать ошибку
+    end
+    Storage --> Chat : commit
+    Chat -> Service : продолжить генерацию
+    Service -> LLM : generate(history, context, question)
+    LLM -> Models : POST /v1/chat/completions
+    alt получен ответ
+        Models --> LLM : текст ответа
+        LLM --> Service : answerReady
+        Service --> Chat : result(requestId, answer)
+        Chat -> Storage : транзакция: сохранить assistant message,\nreply_to_message_id; завершить user message
+        alt commit успешен
+            Storage --> Chat : commit
+            Chat --> UI : messageAdded(chatId, messageId)
+            UI --> User : ответ и источники исходного запроса
+        else ошибка записи ответа
+            Storage --> Chat : ошибка
+            Chat --> UI : показать ответ как несохранённый\nи предложить повторить сохранение
+        end
+    else сеть / таймаут / ошибка модели
+        Models --> LLM : ошибка либо нет ответа до таймаута
+        LLM --> Service : errorOccurred
+        Service --> Chat : questionFailed(requestId, error)
+        Chat -> Storage : user message: failed + error_text
+        Chat --> UI : ошибка у исходного запроса
+    end
+    Service -> Service : освободить обработку; продолжить очередь
+end
+
+legend bottom
+  Это проект будущего поведения: сигнатуры здесь иллюстративные.
+  Сейчас нет БД, requestId, резервирования, режимов и истории в запросе.
+  Новый запрос не уходит в LLM при провале обязательного сохранения.
+  Ответ связывается с исходным чатом, даже если пользователь открыл другой.
+endlegend
+@enduml
