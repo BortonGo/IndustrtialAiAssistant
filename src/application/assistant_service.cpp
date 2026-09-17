@@ -18,6 +18,7 @@ namespace {
 
 AssistantService::AssistantService(QObject *parent) : QObject(parent) {
 
+    // DocumentManager
     documentManager_ = new DocumentManager(maxFileSize, this);
 
     connect(documentManager_, &DocumentManager::errorOccurred,
@@ -29,6 +30,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
         tryStartNextDocument();
     });
 
+    // EmbeddingClient
     embeddingClient_ = new EmbeddingClient(this);
 
     connect(embeddingClient_, &EmbeddingClient::errorOccurred,
@@ -115,6 +117,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
         embeddingClient_->requestEmbedding(pendingChunk_.text);
     });
 
+    // LMStudioLLMClient
     llmClient_ = new LMStudioLLMClient(this);
 
     connect (llmClient_, &ILLMClient::answerReady,
@@ -135,6 +138,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
         tryStartNextDocument();
     });
 
+    // MCPClient
     auto* mcp_client = new MCPClient(this);
 
     connect(mcp_client, & MCPClient::errorOccurred,

@@ -43,6 +43,14 @@ add_executable(IndustrialAiAssistant main.cpp
     src/io/document_manager.cpp
     src/documents/document_list_model.hpp
     src/documents/document_list_model.cpp
+    src/ui/documents_widget.hpp
+    src/ui/documents_widget.cpp
+    src/ui/message_composer.hpp
+    src/ui/message_composer.cpp
+    src/ui/sidebar_widget.hpp
+    src/ui/sidebar_widget.cpp
+    src/ui/chat_widget.hpp
+    src/ui/chat_widget.cpp
 )
 
 target_include_directories(IndustrialAiAssistant PRIVATE

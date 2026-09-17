@@ -119,6 +119,9 @@ bool ChatManager::sendMessage(const QString& text) {
         emit errorOccurred("Wait answer on previous question");
         return false;
     }
+    if (currentChatId_.isEmpty()) {
+        createChat();
+    }
     QString targetChatId = currentChatId_;
     QString id = appendMessage(targetChatId, MessageRole::User, text);
     if (id.isEmpty()) {
