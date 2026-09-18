@@ -1,0 +1,12 @@
+prefix=D:/bld/poppler-split_1788834218811/_h_env/Library
+libdir=D:/bld/poppler-split_1788834218811/_h_env/Library/lib
+includedir=D:/bld/poppler-split_1788834218811/_h_env/Library/include
+
+Name: poppler
+Description: PDF rendering library
+Version: 26.09.0
+Requires.private: freetype2 >= 2.13 zlib libjpeg libcurl >= 8.5 libopenjp2 lcms2 >= 2.14 libpng libtiff-4 >= 4.7.2
+
+Libs: -L${libdir} -lpoppler
+Libs.private: -lgdi32
+Cflags: -I${includedir}/poppler

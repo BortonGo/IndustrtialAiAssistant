@@ -1,0 +1,14 @@
+prefix=D:/bld/poppler-split_1788834218811/_h_env/Library
+libdir=D:/bld/poppler-split_1788834218811/_h_env/Library/lib
+includedir=D:/bld/poppler-split_1788834218811/_h_env/Library/include
+
+Name: poppler-glib
+Description: GLib wrapper for poppler
+Version: 26.09.0
+Requires: glib-2.0 >= 2.80 gobject-2.0 >= 2.80 cairo >= 1.18.0
+Requires.private: gio-2.0 >= 2.80 \
+                  freetype2 >= 2.13 \
+                  poppler = 26.09.0
+
+Libs: -L${libdir} -lpoppler-glib
+Cflags: -I${includedir}/poppler/glib

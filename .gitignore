@@ -15,6 +15,7 @@ CMakeLists.txt.user*
 /release/
 
 /docs
+*.pdf
 *.txt
 !requirements.txt
 !CMakeLists.txt

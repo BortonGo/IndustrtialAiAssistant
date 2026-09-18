@@ -1,29 +1,29 @@
 #include "document_manager.hpp"
 
 #include <stdexcept>
-#include <utility>
 
-DocumentManager::DocumentManager(qint64 maxFileSize, QObject* parent)
-    : QObject(parent), documentLoader_(maxFileSize) {
+DocumentManager::DocumentManager(qint64 maxFileSize, const QString& pdfExtractorPath, QObject* parent)
+    : QObject(parent), documentLoader_(maxFileSize, pdfExtractorPath) {
     documents_.reserve(20);
+
+    connect(&documentLoader_, &DocumentLoader::documentReady,
+            this, [this](const Document& document) {
+        if (findDocument(document.id)) {
+            emit errorOccurred("Document is already loaded");
+            return;
+        }
+        emit documentAboutToBeAdded(documentCount());
+        documents_.push_back(document);
+        emit documentLoaded(documents_.back().id);
+        return;
+    });
+
+    connect(&documentLoader_, &DocumentLoader::errorOccurred,
+            this, &DocumentManager::errorOccurred);
 }
 
-bool DocumentManager::loadTxtFile(const QString& path) {
-    Document d;
-    try {
-        d = documentLoader_.loadTxtFile(path);
-    } catch(const std::runtime_error& e) {
-        emit errorOccurred(QString::fromUtf8(e.what()));
-        return false;
-    }
-    if (findDocument(d.id)) {
-        emit errorOccurred("Document is already loaded");
-        return false;
-    }
-    emit documentAboutToBeAdded(documentCount());
-    documents_.push_back(std::move(d));
-    emit documentLoaded(documents_.back().id);
-    return true;
+void DocumentManager::loadFile(const QString& path) {
+    documentLoader_.loadFile(path);
 }
 
 const Document* DocumentManager::findDocument(const QString& documentId) const {

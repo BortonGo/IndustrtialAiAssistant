@@ -19,7 +19,9 @@ namespace {
 AssistantService::AssistantService(QObject *parent) : QObject(parent) {
 
     // DocumentManager
-    documentManager_ = new DocumentManager(maxFileSize, this);
+    const QString pdfExtractorPath =
+        "C:/Qt/IndustrialAiAssistant/tools/poppler-26.09.0/Library/bin/pdftotext.exe"; // TODO -> to settings in UI
+    documentManager_ = new DocumentManager(maxFileSize, pdfExtractorPath, this);
 
     connect(documentManager_, &DocumentManager::errorOccurred,
             this, &AssistantService::errorOccurred);
@@ -183,7 +185,7 @@ bool AssistantService::askQuestion(const QString &question) {
 }
 
 void AssistantService::loadDocument(const QString& path) {
-    documentManager_->loadTxtFile(path);
+    documentManager_->loadFile(path);
 }
 
 DocumentManager* AssistantService::documentManager() const {

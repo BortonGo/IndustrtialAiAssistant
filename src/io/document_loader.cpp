@@ -1,4 +1,6 @@
 #include "document_loader.hpp"
+#include "txt_document_reader.hpp"
+#include "pdf_document_reader.hpp"
 
 #include <QFile>
 #include <QFileInfo>
@@ -7,38 +9,36 @@
 #include <stdexcept>
 #include <utility>
 
-DocumentLoader::DocumentLoader(qint64 maxFileSize) : maxFileSize_(maxFileSize) {
+DocumentLoader::DocumentLoader(qint64 maxFileSize, const QString& pdfExtractorPath, QObject* parent) :
+    QObject(parent), maxFileSize_(maxFileSize) {
     if (maxFileSize <= 0) {
         throw std::invalid_argument("Maximum document size must be > 0");
     }
+    txtReader_ = new TxtDocumentReader(maxFileSize, this);
+
+    connect(txtReader_, &IDocumentReader::documentReady,
+            this, &DocumentLoader::documentReady);
+
+    connect(txtReader_, &IDocumentReader::errorOccurred,
+            this, &DocumentLoader::errorOccurred);
+
+    pdfReader_ = new PdfDocumentReader(pdfExtractorPath, maxFileSize, this);
+
+    connect(pdfReader_, &IDocumentReader::documentReady,
+            this, &DocumentLoader::documentReady);
+
+    connect(pdfReader_, &IDocumentReader::errorOccurred,
+            this, &DocumentLoader::errorOccurred);
 }
 
-Document DocumentLoader::loadTxtFile(const QString& path) const {
-
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        throw std::runtime_error(file.errorString().toUtf8().constData());
+void DocumentLoader::loadFile(const QString& path) {
+    auto suffix = QFileInfo(path).suffix().toLower();
+    if (suffix == "txt") {
+        txtReader_->load(path);
+    } else if (suffix == "pdf") {
+        pdfReader_->load(path);
+    } else {
+        emit errorOccurred("Unexpected file format");
     }
-    if (file.size() > maxFileSize_) {
-        throw std::runtime_error("File exceeds size limit");
-    }
-
-    auto bytes = file.readAll();
-    if (file.error() != QFileDevice::NoError) {
-        throw std::runtime_error(file.errorString().toUtf8().constData());
-    }
-
-    QString text = QString::fromUtf8(bytes);
-    if (text.trimmed().isEmpty()) {
-        throw std::runtime_error("File without text");
-    }
-
-    const QFileInfo fileInfo(path);
-
-    Document document{};
-    document.id = fileInfo.absoluteFilePath();
-    document.sourcePath = fileInfo.absoluteFilePath();
-    document.text = std::move(text);
-
-    return document;
 }
+

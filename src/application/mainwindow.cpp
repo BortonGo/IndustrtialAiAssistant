@@ -184,7 +184,7 @@ MainWindow::MainWindow(QWidget *parent) :
             this,
             tr("Select document"),
             QString(),
-            tr("Text documents (*.txt)"));
+            tr("Text documents (*.txt *.pdf)"));
 
         if (path.isEmpty()) {
             return;
