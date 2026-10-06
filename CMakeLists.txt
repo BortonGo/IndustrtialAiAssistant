@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(IndustrialAiAssistant LANGUAGES CXX)
+project(IndustrialAiAssistant LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,6 +12,26 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/src/ui")
 
 find_package(Qt5 REQUIRED COMPONENTS Widgets Network)
+
+add_library(md4c STATIC
+    third_party/md4c/md4c.c
+    third_party/md4c/md4c-html.c
+    third_party/md4c/entity.c
+)
+
+target_include_directories(md4c PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/md4c"
+)
+
+target_compile_definitions(md4c PRIVATE MD4C_USE_UTF8)
+
+set_target_properties(md4c PROPERTIES
+    C_STANDARD 99
+    C_STANDARD_REQUIRED ON
+    AUTOMOC OFF
+    AUTOUIC OFF
+    AUTORCC OFF
+)
 
 add_executable(IndustrialAiAssistant src/main.cpp
     src/ui/mainwindow.ui
@@ -63,6 +83,12 @@ add_executable(IndustrialAiAssistant src/main.cpp
     src/io/txt_document_reader.cpp
     include/io/pdf_document_reader.hpp
     src/io/pdf_document_reader.cpp
+    include/io/docx_document_reader.hpp
+    src/io/docx_document_reader.cpp
+    include/io/docx_text_extractor.hpp
+    src/io/docx_text_extractor.cpp
+    include/ui/markdown_render.hpp
+    src/ui/markdown_render.cpp
 )
 
 target_include_directories(IndustrialAiAssistant PRIVATE
@@ -77,7 +103,11 @@ target_include_directories(IndustrialAiAssistant PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include/documents"
 )
 
-target_link_libraries(IndustrialAiAssistant PRIVATE Qt5::Widgets Qt5::Network)
+target_link_libraries(IndustrialAiAssistant PRIVATE
+    Qt5::Widgets
+    Qt5::Network
+    md4c
+)
 
 if(WIN32)
     target_link_libraries(IndustrialAiAssistant PRIVATE dwmapi)

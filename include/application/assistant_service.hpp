@@ -35,8 +35,8 @@ class AssistantService final : public QObject {
     AssistantState state_ = AssistantState::Idle;
 
     VectorStore::InMemoryVectorStore vectorStore_;
-    Chunk pendingChunk_;
     std::size_t nextChunkIndex_ = 0;
+    std::size_t pendingBatchSize_ = 0;
     bool busy_ = false;
 
     double cpuPercent_ = 0.0;
@@ -64,4 +64,5 @@ private:
     QString buildSystemStatusContext() const;
     bool startDocumentIndexing(const QString& documentId);
     void tryStartNextDocument();
+    void requestNextEmbeddingBatch();
 };

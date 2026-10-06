@@ -14,7 +14,8 @@ class DocumentManager final : public QObject {
     DocumentLoader documentLoader_;
     std::vector<Document> documents_;
 public:
-    explicit DocumentManager(qint64 maxFileSize, const QString& pdfExtractorPath, QObject* parent = nullptr);
+    explicit DocumentManager(qint64 maxFileSize, const QString& pdfExtractorPath, const QString& docxPythonPath,
+                             const QString& docxScriptPath, QObject* parent = nullptr);
     void loadFile(const QString& path);
     const Document* findDocument(const QString& documentId) const;
 

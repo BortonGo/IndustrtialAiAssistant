@@ -11,9 +11,11 @@
 
 #include <utility>
 #include <stdexcept>
+#include <algorithm>
 
 namespace {
     constexpr qint64 maxFileSize = 1024 * 1024;
+    constexpr std::size_t embeddingBatchSize = 16;
 }
 
 AssistantService::AssistantService(QObject *parent) : QObject(parent) {
@@ -21,7 +23,13 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
     // DocumentManager
     const QString pdfExtractorPath =
         "C:/Qt/IndustrialAiAssistant/tools/poppler-26.09.0/Library/bin/pdftotext.exe"; // TODO -> to settings in UI
-    documentManager_ = new DocumentManager(maxFileSize, pdfExtractorPath, this);
+    const QString docxPythonPath =
+        "C:/Qt/IndustrialAiAssistant/document_tools/.venv/Scripts/python.exe"; // TODO -> to settings in UI
+    const QString docxScriptPath =
+        "C:/Qt/IndustrialAiAssistant/document_tools/read_docx.py"; // TODO -> to settings in UI
+
+    documentManager_ = new DocumentManager(maxFileSize, pdfExtractorPath,
+                                           docxPythonPath, docxScriptPath, this);
 
     connect(documentManager_, &DocumentManager::errorOccurred,
             this, &AssistantService::errorOccurred);
@@ -43,6 +51,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
             vectorStore_.removeDocument(indexingDocumentId_);
             indexingDocumentId_.clear();
         }
+        pendingBatchSize_ = 0;
         state_ = AssistantState::Idle;
         busy_ = false;
         emit busyChanged(false);
@@ -87,36 +96,60 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
                 return;
             }
         }
+    });
+
+    connect(embeddingClient_, &EmbeddingClient::embeddingsReady,
+            this, [this](const std::vector<std::vector<double>>& embeddings) {
         if (state_ != AssistantState::Indexing) {
             return;
         }
-        VectorStore::Entry entry;
-        entry.chunk = pendingChunk_;
-        entry.embedding = embedding;
 
         try {
-            vectorStore_.add(entry);
-        } catch (const std::invalid_argument &e) {
-            documentManager_->setDocumentStatus(indexingDocumentId_, DocumentStatus::Error);
+            if (pendingBatchSize_ == 0 ||
+                embeddings.size() != pendingBatchSize_ ||
+                nextChunkIndex_ > chunks_.size() ||
+                pendingBatchSize_ > chunks_.size() - nextChunkIndex_) {
+                throw std::invalid_argument("Unexpected embedding batch");
+            }
+
+            for (std::size_t i = 0; i < embeddings.size(); ++i) {
+                VectorStore::Entry entry;
+                entry.chunk = chunks_[nextChunkIndex_ + i];
+                entry.embedding = embeddings[i];
+                vectorStore_.add(entry);
+            }
+        } catch (const std::invalid_argument& e) {
+            documentManager_->setDocumentStatus(
+                indexingDocumentId_, DocumentStatus::Error);
             vectorStore_.removeDocument(indexingDocumentId_);
+
             indexingDocumentId_.clear();
+            pendingBatchSize_ = 0;
             state_ = AssistantState::Idle;
+
             emit errorOccurred(QString::fromUtf8(e.what()));
             tryStartNextDocument();
             return;
         }
-        ++nextChunkIndex_;
+
+        nextChunkIndex_ += pendingBatchSize_;
+        pendingBatchSize_ = 0;
+
         qDebug() << nextChunkIndex_ << "/" << chunks_.size();
-        if (nextChunkIndex_ >= chunks_.size()) {
-            documentManager_->setDocumentStatus(indexingDocumentId_, DocumentStatus::Ready);
-            state_ = AssistantState::Idle;
+
+        if (nextChunkIndex_ == chunks_.size()) {
+            documentManager_->setDocumentStatus(
+                indexingDocumentId_, DocumentStatus::Ready);
+
             indexingDocumentId_.clear();
+            state_ = AssistantState::Idle;
+
             qDebug() << "Indexing finished";
             tryStartNextDocument();
             return;
         }
-        pendingChunk_ = chunks_[nextChunkIndex_];
-        embeddingClient_->requestEmbedding(pendingChunk_.text);
+
+        requestNextEmbeddingBatch();
     });
 
     // LMStudioLLMClient
@@ -240,9 +273,9 @@ bool AssistantService::startDocumentIndexing(const QString& documentId) {
     documentManager_->setDocumentStatus(indexingDocumentId_, DocumentStatus::Indexing);
     vectorStore_.removeDocument(indexingDocumentId_);
     nextChunkIndex_ = 0;
-    pendingChunk_ = chunks_[nextChunkIndex_];
+    pendingBatchSize_ = 0;
     state_ = AssistantState::Indexing;
-    embeddingClient_->requestEmbedding(pendingChunk_.text);
+    requestNextEmbeddingBatch();
     return true;
 }
 
@@ -257,5 +290,22 @@ void AssistantService::tryStartNextDocument() {
             return;
         }
     }
+}
+
+void AssistantService::requestNextEmbeddingBatch() {
+    if (state_ != AssistantState::Indexing ||
+        nextChunkIndex_ >= chunks_.size()) {
+        return;
+    }
+
+    const std::size_t remaining = chunks_.size() - nextChunkIndex_;
+    pendingBatchSize_ = std::min(embeddingBatchSize, remaining);
+
+    QStringList texts;
+    for (std::size_t i = 0; i < pendingBatchSize_; ++i) {
+        texts.append(chunks_[nextChunkIndex_ + i].text);
+    }
+
+    embeddingClient_->requestEmbeddings(texts);
 }
 

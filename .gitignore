@@ -56,3 +56,6 @@ __pycache__/
 # diagrams ang local readme
 /architecture/README.md
 /architecture/rendered/
+
+/test-document.docx
+/test-documents/

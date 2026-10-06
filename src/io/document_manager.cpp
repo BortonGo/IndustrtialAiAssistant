@@ -2,8 +2,9 @@
 
 #include <stdexcept>
 
-DocumentManager::DocumentManager(qint64 maxFileSize, const QString& pdfExtractorPath, QObject* parent)
-    : QObject(parent), documentLoader_(maxFileSize, pdfExtractorPath) {
+DocumentManager::DocumentManager(qint64 maxFileSize, const QString& pdfExtractorPath, const QString& docxPythonPath,
+                                 const QString& docxScriptPath, QObject* parent)
+    : QObject(parent), documentLoader_(maxFileSize, pdfExtractorPath, docxPythonPath, docxScriptPath) {
     documents_.reserve(20);
 
     connect(&documentLoader_, &DocumentLoader::documentReady,

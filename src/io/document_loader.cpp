@@ -1,6 +1,7 @@
 #include "document_loader.hpp"
 #include "txt_document_reader.hpp"
 #include "pdf_document_reader.hpp"
+#include "docx_document_reader.hpp"
 
 #include <QFile>
 #include <QFileInfo>
@@ -9,7 +10,8 @@
 #include <stdexcept>
 #include <utility>
 
-DocumentLoader::DocumentLoader(qint64 maxFileSize, const QString& pdfExtractorPath, QObject* parent) :
+DocumentLoader::DocumentLoader(qint64 maxFileSize, const QString& pdfExtractorPath, const QString& docxPythonPath,
+                               const QString& docxScriptPath, QObject* parent) :
     QObject(parent), maxFileSize_(maxFileSize) {
     if (maxFileSize <= 0) {
         throw std::invalid_argument("Maximum document size must be > 0");
@@ -29,6 +31,14 @@ DocumentLoader::DocumentLoader(qint64 maxFileSize, const QString& pdfExtractorPa
 
     connect(pdfReader_, &IDocumentReader::errorOccurred,
             this, &DocumentLoader::errorOccurred);
+
+    docxReader_ = new DocxDocumentReader(docxPythonPath, docxScriptPath, maxFileSize, this);
+
+    connect(docxReader_, &IDocumentReader::documentReady,
+            this, &DocumentLoader::documentReady);
+
+    connect(docxReader_, &IDocumentReader::errorOccurred,
+            this, &DocumentLoader::errorOccurred);
 }
 
 void DocumentLoader::loadFile(const QString& path) {
@@ -37,6 +47,8 @@ void DocumentLoader::loadFile(const QString& path) {
         txtReader_->load(path);
     } else if (suffix == "pdf") {
         pdfReader_->load(path);
+    } else if (suffix == "docx") {
+        docxReader_->load(path);
     } else {
         emit errorOccurred("Unexpected file format");
     }
