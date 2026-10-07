@@ -1,6 +1,10 @@
 #pragma once
 
+#include "document_block.hpp"
+
 #include <QString>
+
+#include <vector>
 
 enum class DocumentStatus {
     Pending,
@@ -14,6 +18,7 @@ struct Document final {
     QString sourcePath;
     QString text;
     DocumentStatus status = DocumentStatus::Pending;
+    std::vector<DocumentBlock> blocks;
 
     static QString statusToQString(const DocumentStatus& status_) {
         switch (status_) {
