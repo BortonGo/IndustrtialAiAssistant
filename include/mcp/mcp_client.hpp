@@ -16,9 +16,12 @@ class MCPClient final : public QObject {
 
     bool systemStatusPending_ = false;
     bool pollingPausedByTimeout_ = false;
+    QString pythonPath_;
+    QString scriptPath_;
 
 public:
-    explicit MCPClient(QObject* parent = nullptr);
+    explicit MCPClient(const QString& pythonPath, const QString& scriptPath,
+                       QObject* parent = nullptr);
 
     void start();
 

@@ -9,16 +9,29 @@
 #include <QByteArray>
 #include <QTimer>
 #include <QDebug>
+#include <QNetworkProxy>
 
 #include <vector>
 #include <cmath>
 
-EmbeddingClient::EmbeddingClient(QObject *parent) : QObject(parent) {
+EmbeddingClient::EmbeddingClient(const ModelApiConfig& config, QObject *parent) :
+    QObject(parent), config_(config) {
     manager_ = new QNetworkAccessManager(this);
+    manager_->setProxy(QNetworkProxy::NoProxy);
+}
+
+void EmbeddingClient::cancelRequests()
+{
+    for (auto* reply : manager_->findChildren<QNetworkReply*>()) {
+        disconnect(reply, nullptr, this, nullptr);
+        reply->abort();
+        reply->deleteLater();
+    }
 }
 
 void EmbeddingClient::requestModels() {
-    QNetworkRequest request(QUrl("http://127.0.0.1:1234/v1/models"));
+    const QUrl url = config_.baseUrl.resolved(QUrl("models"));
+    QNetworkRequest request(url);
     auto* reply = manager_->get(request);
     connect(reply, &QNetworkReply::finished,
             this, [this, reply](){
@@ -33,10 +46,11 @@ void EmbeddingClient::requestModels() {
 }
 
 void EmbeddingClient::requestEmbedding(const QString& text) {
-    QNetworkRequest request(QUrl("http://127.0.0.1:1234/v1/embeddings"));
+    const QUrl url = config_.baseUrl.resolved(QUrl("embeddings"));
+    QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader,"application/json");
     QJsonObject body;
-    body["model"] = QString("text-embedding-embeddinggemma-300m-qat");
+    body["model"] = config_.modelName;
     body["input"] = text;
     QByteArray bytes = QJsonDocument(body).toJson();
     auto* reply = manager_->post(request, bytes);
@@ -127,10 +141,11 @@ void EmbeddingClient::requestEmbeddings(const QStringList& texts) {
     }
 
     QJsonObject body;
-    body["model"] = QString("text-embedding-embeddinggemma-300m-qat");
+    body["model"] = config_.modelName;
     body["input"] = input;
 
-    QNetworkRequest request(QUrl("http://127.0.0.1:1234/v1/embeddings"));
+    const QUrl url = config_.baseUrl.resolved(QUrl("embeddings"));
+    QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
     auto* reply = manager_->post(request, QJsonDocument(body).toJson());

@@ -18,6 +18,7 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
     );
     documentsLayout->addWidget(documentsLabel);
     auto* btnAddDocument = new QPushButton("Добавить документ");
+    uploadButton_ = btnAddDocument;
     documentsLayout->addWidget(btnAddDocument, 0, Qt::AlignLeft);
 
     QListView* documentListView = new QListView(this);
@@ -48,3 +49,5 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
     connect(btnAddDocument, &QPushButton::clicked,
             this, &DocumentsWidget::documentUploadRequested);
 }
+
+void DocumentsWidget::setUploadEnabled(bool enabled) { uploadButton_->setEnabled(enabled); }

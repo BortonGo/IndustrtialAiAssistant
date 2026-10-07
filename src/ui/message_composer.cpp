@@ -32,6 +32,7 @@ MessageComposer::MessageComposer(QWidget* parent) : QWidget(parent) {
     textQuestion_->setMaximumHeight(110);
 
     QPushButton *btnAsk = new QPushButton("↑");
+    sendButton_ = btnAsk;
     btnAsk->setFixedSize(44,44);
     btnAsk->setToolTip("Send question");
     btnAsk->setStyleSheet(
@@ -52,6 +53,7 @@ MessageComposer::MessageComposer(QWidget* parent) : QWidget(parent) {
                 );
 
     QPushButton *btnLoadDoc = new QPushButton("+");
+    uploadButton_ = btnLoadDoc;
     btnLoadDoc->setFixedSize(44,44);
     btnLoadDoc->setToolTip("Load document");
     btnLoadDoc->setStyleSheet(
@@ -94,3 +96,6 @@ MessageComposer::MessageComposer(QWidget* parent) : QWidget(parent) {
 void MessageComposer::clearInput() {
     textQuestion_->clear();
 }
+
+void MessageComposer::setSendEnabled(bool enabled) { sendButton_->setEnabled(enabled); }
+void MessageComposer::setUploadEnabled(bool enabled) { uploadButton_->setEnabled(enabled); }

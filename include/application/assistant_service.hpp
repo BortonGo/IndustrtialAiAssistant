@@ -14,6 +14,10 @@
 #include <vector>
 #include <deque>
 
+class LlamaServerProcess;
+class QProcess;
+class MCPClient;
+
 class AssistantService final : public QObject {
     Q_OBJECT
 
@@ -44,9 +48,34 @@ class AssistantService final : public QObject {
     QDateTime systemStatusReceivedAt_;
 
     std::deque<QString> indexingQueue_;
+    QString runtimeRoot_;
+    QString requestedBackend_;
+    QString runtimeBackend_;
+    QString chatModelPath_;
+    QString embeddingModelPath_;
+    int chatPort_ = 8080;
+    int embeddingPort_ = 8081;
+    int startupTimeoutMs_ = 120000;
+    LlamaServerProcess* chatServer_ = nullptr;
+    LlamaServerProcess* embeddingServer_ = nullptr;
+    QProcess* backendProbe_ = nullptr;
+    MCPClient* mcpClient_ = nullptr;
+    bool serversStarted_ = false;
+    bool shuttingDown_ = false;
+    bool shutdownReported_ = false;
+    bool reportedReady_ = false;
+    QString chatServerStatus_ = QStringLiteral("Остановлен");
+    QString embeddingServerStatus_ = QStringLiteral("Остановлен");
 
 public:
     explicit AssistantService(QObject *parent = nullptr);
+    ~AssistantService() override;
+    void startServers();
+    void stopServers();
+    bool modelsReady() const;
+    bool isBusy() const;
+    QString chatServerStatus() const;
+    QString embeddingServerStatus() const;
     bool askQuestion(const QString &question);
     void loadDocument(const QString& path);
     DocumentManager* documentManager() const;
@@ -59,10 +88,18 @@ signals:
     void documentLoaded(const QString& fileName, int textlength);
     void retrievalReady(const std::vector<VectorStore::SearchResult>& results);
     void systemStatusReady(double cpuPercent, double memoryPercent);
+    void serverStatusChanged(const QString& server, const QString& text);
+    void serverLogMessage(const QString& server, const QString& text);
+    void modelsReadyChanged(bool ready);
+    void serversStopped();
 
 private:
     QString buildSystemStatusContext() const;
     bool startDocumentIndexing(const QString& documentId);
     void tryStartNextDocument();
     void requestNextEmbeddingBatch();
+    void launchServers(bool useCuda);
+    void updateModelsReady();
+    void updateServersStopped();
+    void handleServerFailure(const QString& message);
 };

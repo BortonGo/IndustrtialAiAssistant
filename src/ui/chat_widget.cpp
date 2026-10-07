@@ -175,3 +175,6 @@ void ChatWidget::showNotification(const QString& text) {
 void ChatWidget::clearInput() {
     composer_->clearInput();
 }
+
+void ChatWidget::setSendEnabled(bool enabled) { composer_->setSendEnabled(enabled); }
+void ChatWidget::setUploadEnabled(bool enabled) { composer_->setUploadEnabled(enabled); }

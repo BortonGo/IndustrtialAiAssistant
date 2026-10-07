@@ -29,6 +29,8 @@ public:
     void setContextText(const QString& text);
     void showNotification(const QString& text);
     void clearInput();
+    void setSendEnabled(bool enabled);
+    void setUploadEnabled(bool enabled);
 
 signals:
     void sendRequested(const QString& text);

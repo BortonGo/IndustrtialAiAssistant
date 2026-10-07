@@ -9,6 +9,7 @@ public:
     explicit ILLMClient(QObject* parent = nullptr);
     virtual void generate(const QString& context,
                           const QString& question) = 0;
+    virtual void cancelRequests() = 0;
 signals:
     void answerReady(const QString &answer);
     void errorOccurred(const QString &message);

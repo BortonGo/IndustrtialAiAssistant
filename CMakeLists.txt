@@ -89,6 +89,15 @@ add_executable(IndustrialAiAssistant src/main.cpp
     src/io/docx_text_extractor.cpp
     include/ui/markdown_render.hpp
     src/ui/markdown_render.cpp
+    include/llm/model_api_config.hpp
+    include/llm/llama_server_config.hpp
+    include/llm/llama_server_process.hpp
+    src/llm/llama_server_process.cpp
+    include/application/runtime_paths.hpp
+    src/application/runtime_paths.cpp
+    include/ui/server_status_widget.hpp
+    src/ui/server_status_widget.cpp
+    include/documents/document_block.hpp
 )
 
 target_include_directories(IndustrialAiAssistant PRIVATE

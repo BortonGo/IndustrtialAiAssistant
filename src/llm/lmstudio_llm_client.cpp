@@ -9,9 +9,21 @@
 #include <QByteArray>
 #include <QTimer>
 #include <QDebug>
+#include <QNetworkProxy>
 
-LMStudioLLMClient::LMStudioLLMClient(QObject* parent) : ILLMClient(parent) {
+LMStudioLLMClient::LMStudioLLMClient(const ModelApiConfig& config, QObject* parent) :
+    ILLMClient(parent), config_(config) {
     manager_ = new QNetworkAccessManager(this);
+    manager_->setProxy(QNetworkProxy::NoProxy);
+}
+
+void LMStudioLLMClient::cancelRequests()
+{
+    for (auto* reply : manager_->findChildren<QNetworkReply*>()) {
+        disconnect(reply, nullptr, this, nullptr);
+        reply->abort();
+        reply->deleteLater();
+    }
 }
 
 void LMStudioLLMClient::generate(const QString& context,
@@ -36,11 +48,12 @@ void LMStudioLLMClient::generate(const QString& context,
     messages.append(userMessage);
 
     QJsonObject body;
-    body["model"] = "qwen/qwen3-14b";
+    body["model"] = config_.modelName;
     body["stream"] = false;
     body["messages"] = messages;
 
-    QNetworkRequest request(QUrl("http://127.0.0.1:1234/v1/chat/completions"));
+    const QUrl url = config_.baseUrl.resolved(QUrl("chat/completions"));
+    QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
     QByteArray bytes = QJsonDocument(body).toJson();

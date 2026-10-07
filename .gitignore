@@ -59,3 +59,7 @@ __pycache__/
 
 /test-document.docx
 /test-documents/
+
+# Local model runtime and weights
+/tools/llama-cpp/
+*.gguf

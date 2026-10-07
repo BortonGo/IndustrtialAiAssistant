@@ -6,7 +6,8 @@
 #include <QJsonArray>
 #include <QDebug>
 
-MCPClient::MCPClient(QObject* parent) : QObject(parent) {
+MCPClient::MCPClient(const QString& pythonPath, const QString& scriptPath, QObject* parent)
+    : QObject(parent), pythonPath_(pythonPath), scriptPath_(scriptPath) {
     pollTimer_ = new QTimer(this);
     pollTimer_->setInterval(2000);
 
@@ -284,10 +285,10 @@ void MCPClient::requestSystemStatus() {
 
 void MCPClient::start() {
     process_->start(
-        "C:/Qt/IndustrialAiAssistant/mcp_server/.venv/Scripts/python.exe",
+        pythonPath_,
         QStringList()
                 << "-u"
-                << "C:/Qt/IndustrialAiAssistant/mcp_server/server.py");
+                << scriptPath_);
 }
 
 void MCPClient::stop() {

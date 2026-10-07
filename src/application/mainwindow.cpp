@@ -7,11 +7,16 @@
 #include "chat_manager.hpp"
 #include "chat_list_model.hpp"
 #include "documents/document_list_model.hpp"
+#include "server_status_widget.hpp"
 
 #include <QHBoxLayout>
 #include <QStatusBar>
 #include <QStackedWidget>
 #include <QIcon>
+#include <QVBoxLayout>
+#include <QCloseEvent>
+#include <QTimer>
+#include <QApplication>
 
 #include <QFileDialog>
 #include <QMessageBox>
@@ -86,6 +91,7 @@ MainWindow::MainWindow(QWidget *parent) :
 
     // Other widgets
     auto* service = new AssistantService(this);
+    service_ = service;
     auto* chatManager = new ChatManager(service, this);
     auto* chatListModel = new ChatListModel(chatManager, chatManager);
     auto* documentListModel = new DocumentListModel(
@@ -98,7 +104,13 @@ MainWindow::MainWindow(QWidget *parent) :
                 "QWidget#mainSurface { background-color: #18191C; }"
                 );
 
-    auto* rootLayout = new QHBoxLayout(centralWidget());
+    auto* windowLayout = new QVBoxLayout(centralWidget());
+    windowLayout->setContentsMargins(12, 12, 12, 12);
+    windowLayout->setSpacing(8);
+    auto* serverStatus = new ServerStatusWidget;
+    windowLayout->addWidget(serverStatus);
+    auto* rootLayout = new QHBoxLayout;
+    windowLayout->addLayout(rootLayout, 1);
     rootLayout->setContentsMargins(12, 12, 12, 12);
     rootLayout->setSpacing(12);
 
@@ -114,6 +126,36 @@ MainWindow::MainWindow(QWidget *parent) :
 
     rootLayout->addWidget(sidebar);
     rootLayout->addWidget(pages, 1);
+
+    serverStatus->setChatStatus(service->chatServerStatus());
+    serverStatus->setEmbeddingStatus(service->embeddingServerStatus());
+    connect(service, &AssistantService::serverStatusChanged, serverStatus,
+            [serverStatus](const QString& name, const QString& text) {
+        if (name == "Qwen") {
+            serverStatus->setChatStatus(text);
+        } else {
+            serverStatus->setEmbeddingStatus(text);
+        }
+    });
+    connect(service, &AssistantService::serverLogMessage,
+            serverStatus, &ServerStatusWidget::appendLog);
+    auto updateControls = [service, chatPage, documentsPage]() {
+        const bool ready = service->modelsReady();
+        chatPage->setSendEnabled(ready && !service->isBusy());
+        chatPage->setUploadEnabled(ready);
+        documentsPage->setUploadEnabled(ready);
+    };
+    connect(service, &AssistantService::modelsReadyChanged, this,
+            [updateControls](bool) { updateControls(); });
+    connect(service, &AssistantService::busyChanged, this,
+            [updateControls](bool) { updateControls(); });
+    updateControls();
+    connect(service, &AssistantService::serversStopped, this, [this]() {
+        shutdownComplete_ = true;
+        QTimer::singleShot(0, this, [this]() { close(); });
+    });
+    connect(qApp, &QCoreApplication::aboutToQuit, service, &AssistantService::stopServers);
+    QTimer::singleShot(0, service, &AssistantService::startServers);
 
     // Navigation
     connect(sidebar, &SidebarWidget::chatPageRequested,
@@ -254,5 +296,20 @@ MainWindow::MainWindow(QWidget *parent) :
 
 MainWindow::~MainWindow()
 {
+    service_->stopServers();
     delete ui;
+}
+
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    if (shutdownComplete_) {
+        QMainWindow::closeEvent(event);
+        return;
+    }
+    // Keep the event loop alive until both listening processes have exited.
+    event->ignore();
+    if (!shutdownRequested_) {
+        shutdownRequested_ = true;
+        service_->stopServers();
+    }
 }

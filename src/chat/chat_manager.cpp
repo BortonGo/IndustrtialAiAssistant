@@ -111,6 +111,10 @@ const Chat* ChatManager::chatAt(int row) const {
 }
 
 bool ChatManager::sendMessage(const QString& text) {
+    if (!service_->modelsReady()) {
+        emit errorOccurred(QStringLiteral("Серверы моделей ещё не готовы. Проверьте строку состояния сверху."));
+        return false;
+    }
     if (text.trimmed().isEmpty()) {
         emit errorOccurred("Enter message");
         return false;

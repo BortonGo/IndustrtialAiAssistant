@@ -1,5 +1,7 @@
 #pragma once
 
+#include "model_api_config.hpp"
+
 #include <QObject>
 #include <QNetworkAccessManager>
 #include <QStringList>
@@ -10,11 +12,13 @@
 class EmbeddingClient final : public QObject {
     Q_OBJECT
     QNetworkAccessManager *manager_;
+    ModelApiConfig config_;
 public:
-    EmbeddingClient(QObject *parent = nullptr);
+    EmbeddingClient(const ModelApiConfig& config, QObject *parent = nullptr);
     void requestModels();
     void requestEmbedding(const QString& text);
     void requestEmbeddings(const QStringList& texts);
+    void cancelRequests();
 
 signals:
     void errorOccurred(const QString& message);
