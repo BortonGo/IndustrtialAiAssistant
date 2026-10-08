@@ -4,6 +4,11 @@ ChatListModel::ChatListModel(ChatManager* manager, QObject* parent)
     : QAbstractListModel(parent), manager_(manager) {
     connect(manager_, &ChatManager::chatsAboutToReset, this, [this]() { beginResetModel(); });
     connect(manager_, &ChatManager::chatsReset, this, [this]() { endResetModel(); });
+    connect(manager_, &ChatManager::chatActivityChanged, this, [this]() {
+        if (rowCount() > 0) emit dataChanged(index(0, 0), index(rowCount() - 1, 0), {Qt::DisplayRole, Qt::ToolTipRole, CanDeleteRole});
+    });
+    connect(manager_, &ChatManager::chatAboutToBeRemoved, this, [this](int row) { beginRemoveRows({}, row, row); });
+    connect(manager_, &ChatManager::chatRemoved, this, [this]() { endRemoveRows(); });
 
     connect(manager_, &ChatManager::chatAboutToBeCreated,
             this, [this](int row) {
@@ -46,9 +51,14 @@ QVariant ChatListModel::data(const QModelIndex& index, int role) const {
         return {};
     }
     if (role == Qt::DisplayRole) {
-        return chat->title;
+        const auto activity = manager_->chatActivity(chat->id);
+        return chat->title + (activity.isEmpty() ? QString() : "\n" + activity);
+    } else if (role == Qt::ToolTipRole) {
+        return chat->title + "\n" + manager_->chatActivity(chat->id);
     } else if (role == Qt::UserRole) {
         return chat->id;
+    } else if (role == CanDeleteRole) {
+        return manager_->canDeleteChat(chat->id);
     }
     return {};
 }

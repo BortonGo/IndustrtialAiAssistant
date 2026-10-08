@@ -27,12 +27,17 @@ class AssistantService final : public QObject {
         Reading,
         Indexing,
         Saving,
-        Restoring,
+        Preparing,
         Querying,
         Generating
     };
 
     DocumentManager* documentManager_;
+    DocumentManager* visibleDocuments_;
+    VectorStore::InMemoryVectorStore visibleIndex_;
+    QString visibleChatId_;
+    bool loadingChat_ = false;
+    quint64 selectionVersion_ = 0;
     std::vector<Chunk> chunks_;
     QString indexingDocumentId_;
 
@@ -40,12 +45,17 @@ class AssistantService final : public QObject {
     QString pendingQuestion_;
     QString activeChatId_;
     QString requestMessageId_;
+    QStringList pendingAttachmentPaths_;
+    QStringList attachedDocumentIds_;
+    int nextAttachment_ = 0;
+    bool importingAttachments_ = false;
     StorageClient* storage_ = nullptr;
 
     EmbeddingClient* embeddingClient_ = nullptr;
     AssistantState state_ = AssistantState::Idle;
 
     VectorStore::InMemoryVectorStore vectorStore_;
+    VectorStore::InMemoryVectorStore pendingIndex_;
     std::size_t nextChunkIndex_ = 0;
     std::size_t pendingBatchSize_ = 0;
     bool busy_ = false;
@@ -62,8 +72,10 @@ class AssistantService final : public QObject {
     QString embeddingModelPath_;
     QString projectorPath_;
     QString chatGpuLayers_;
+    QString chatKvCacheType_;
     bool projectorOnGpu_ = true;
     int chatContextSize_ = 8192;
+    int maxAnswerTokens_ = 4096;
     int chatPort_ = 8080;
     int embeddingPort_ = 8081;
     int startupTimeoutMs_ = 120000;
@@ -88,16 +100,22 @@ public:
     QString chatServerStatus() const;
     QString embeddingServerStatus() const;
     bool askQuestion(const QString &question);
-    bool askQuestion(const QString& question, const QString& messageId);
+    bool askQuestion(const QString& question, const QString& messageId, const QString& chatId = {}, const QStringList& attachments = {});
+    QString operationChatId() const;
+    bool isChatReady(const QString& id) const { return !id.isEmpty() && visibleChatId_ == id && !loadingChat_; }
     StorageClient* storage() const { return storage_; }
     void activateChat(const QString& chatId, std::function<void(const QString&)> callback);
+    void forgetChat(const QString& chatId);
     void loadDocument(const QString& path);
     void cancelDocument();
     DocumentManager* documentManager() const;
 
 signals:
+    void chatActivated(const QString& chatId);
     void contextSaved(const QString& messageId, const QString& context);
     void answerReady(const QString &answer);
+    void answerProgress(const QString& messageId, const QString& text);
+    void attachmentsSaved(const QString& messageId, const QJsonArray& attachments);
     void errorOccurred(const QString &message);
     void questionFailed(const QString& message);
     void busyChanged(bool busy);
@@ -113,9 +131,16 @@ signals:
 private:
     QString buildSystemStatusContext() const;
     bool startDocumentIndexing(const QString& documentId);
+    void finishDocumentIndexing(bool success);
     void tryStartNextDocument();
     void requestNextEmbeddingBatch();
-    void generateSavedContext(const QString& context, const QStringList& images = {});
+    void prepareContext(const std::vector<ContextSource>& sources = {});
+    void startQuestion();
+    void prepareNextAttachment();
+    void bindAttachment(const QString& documentId);
+    void failAttachment(const QString& error);
+    void syncVisibleDocuments();
+    void copyVisibleWorkspace();
     void launchServers(bool useCuda);
     void updateModelsReady();
     void updateServersStopped();

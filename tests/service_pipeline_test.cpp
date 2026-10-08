@@ -31,13 +31,13 @@ int main(int argc, char** argv) {
                      [&](const QString& text) { qWarning().noquote() << text; QTimer::singleShot(0, &service, &AssistantService::stopServers); });
     auto start = [&]() {
         if (restoreOnly) return;
-        if (!service.modelsReady() || chats.isBusy() || started) return;
+        if (!service.modelsReady() || service.isBusy() || chats.isBusy() || !chats.currentChat() || started) return;
         started = true;
         chats.createChat();
     };
     QObject::connect(&service, &AssistantService::modelsReadyChanged, [&](bool) { QTimer::singleShot(0, &service, start); });
     QObject::connect(&chats, &ChatManager::operationChanged, [&]() { QTimer::singleShot(0, &service, start); });
-    QObject::connect(&chats, &ChatManager::currentChatChanged, [&](const QString& chatId) {
+    QObject::connect(&service, &AssistantService::chatActivated, [&](const QString& chatId) {
         if (restoreOnly) {
             const auto* chat = chats.currentChat();
             const auto* document = service.documentManager()->documentAt(0);

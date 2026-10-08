@@ -34,6 +34,11 @@ set_target_properties(md4c PROPERTIES
 )
 
 add_executable(IndustrialAiAssistant src/main.cpp
+    include/llm/context_builder.hpp src/llm/context_builder.cpp
+    include/llm/context_selection.hpp src/llm/context_selection.cpp
+    include/llm/system_status_policy.hpp src/llm/system_status_policy.cpp
+    include/llm/completion_stream.hpp src/llm/completion_stream.cpp
+    include/ui/attachment_card.hpp src/ui/attachment_card.cpp
     include/storage/storage_client.hpp src/storage/storage_client.cpp
     include/storage/storage_codec.hpp src/storage/storage_codec.cpp
     src/ui/mainwindow.ui
@@ -44,6 +49,7 @@ add_executable(IndustrialAiAssistant src/main.cpp
     include/documents/document.hpp
     include/rag/chunk.h
     src/rag/document_chunker.cpp
+    include/rag/document_context.hpp src/rag/document_context.cpp
     include/rag/document_chunker.h
     src/rag/vector_store.cpp
     include/rag/vector_store.hpp
@@ -74,6 +80,8 @@ add_executable(IndustrialAiAssistant src/main.cpp
     src/ui/sidebar_widget.cpp
     include/ui/chat_widget.hpp
     src/ui/chat_widget.cpp
+    include/ui/thinking_indicator.hpp
+    src/ui/thinking_indicator.cpp
     include/ui/message_widget.hpp
     src/ui/message_widget.cpp
     resources/resources.qrc
@@ -126,10 +134,23 @@ if(WIN32)
     )
 endif()
 
-option(LOCAL_ASSISTANT_BUILD_TESTS "Build document pipeline checks" OFF)
+option(LOCAL_ASSISTANT_BUILD_TESTS "Build local pipeline and context checks" OFF)
 if(LOCAL_ASSISTANT_BUILD_TESTS)
     enable_testing()
+    add_executable(context_builder_test tests/context_builder_test.cpp src/llm/context_builder.cpp
+        src/llm/context_selection.cpp src/llm/system_status_policy.cpp src/llm/completion_stream.cpp src/llm/lmstudio_llm_client.cpp src/llm/illm_client.cpp
+        include/llm/context_builder.hpp include/llm/illm_client.hpp)
+    target_include_directories(context_builder_test PRIVATE include include/llm)
+    target_link_libraries(context_builder_test PRIVATE Qt5::Core Qt5::Network)
+    add_test(NAME context_builder COMMAND context_builder_test)
+    add_executable(context_relevance_test EXCLUDE_FROM_ALL tests/context_relevance_test.cpp
+        src/llm/context_builder.cpp src/llm/context_selection.cpp src/llm/system_status_policy.cpp src/llm/completion_stream.cpp src/llm/lmstudio_llm_client.cpp
+        src/llm/illm_client.cpp include/llm/context_builder.hpp include/llm/illm_client.hpp)
+    target_include_directories(context_relevance_test PRIVATE include include/llm)
+    target_link_libraries(context_relevance_test PRIVATE Qt5::Core Qt5::Network)
     add_executable(document_pipeline_test tests/document_pipeline_test.cpp
+        src/storage/storage_codec.cpp
+        src/io/document_manager.cpp include/io/document_manager.hpp
         src/io/document_content_parser.cpp src/io/document_extractor.cpp
         include/io/document_extractor.hpp src/rag/document_chunker.cpp
         src/io/document_loader.cpp include/io/document_loader.hpp
@@ -139,6 +160,18 @@ if(LOCAL_ASSISTANT_BUILD_TESTS)
     target_include_directories(document_pipeline_test PRIVATE include include/io include/rag)
     target_link_libraries(document_pipeline_test PRIVATE Qt5::Core)
     add_test(NAME document_pipeline COMMAND document_pipeline_test)
+    add_executable(document_context_test tests/document_context_test.cpp src/rag/document_context.cpp
+        src/rag/vector_store.cpp src/llm/context_selection.cpp)
+    target_include_directories(document_context_test PRIVATE include include/rag include/llm)
+    target_link_libraries(document_context_test PRIVATE Qt5::Core)
+    add_test(NAME document_context COMMAND document_context_test)
+    add_executable(document_retrieval_test EXCLUDE_FROM_ALL tests/document_retrieval_test.cpp
+        src/rag/document_context.cpp src/rag/vector_store.cpp src/rag/embedding_client.cpp include/rag/embedding_client.hpp
+        src/storage/storage_codec.cpp src/io/document_content_parser.cpp
+        src/llm/context_builder.cpp src/llm/context_selection.cpp src/llm/system_status_policy.cpp
+        src/llm/completion_stream.cpp src/llm/lmstudio_llm_client.cpp src/llm/illm_client.cpp include/llm/context_builder.hpp include/llm/illm_client.hpp)
+    target_include_directories(document_retrieval_test PRIVATE include include/rag include/llm include/io)
+    target_link_libraries(document_retrieval_test PRIVATE Qt5::Core Qt5::Network)
     # Built on demand because this test starts the actual configured model servers.
     get_target_property(APP_TEST_SOURCES IndustrialAiAssistant SOURCES)
     get_target_property(APP_TEST_INCLUDES IndustrialAiAssistant INCLUDE_DIRECTORIES)
@@ -148,5 +181,23 @@ if(LOCAL_ASSISTANT_BUILD_TESTS)
     target_link_libraries(service_pipeline_test PRIVATE Qt5::Widgets Qt5::Network md4c)
     if(WIN32)
         target_link_libraries(service_pipeline_test PRIVATE dwmapi)
+    endif()
+    add_executable(chat_context_integration_test EXCLUDE_FROM_ALL tests/chat_context_integration_test.cpp ${APP_TEST_SOURCES})
+    add_executable(message_attachments_test EXCLUDE_FROM_ALL tests/message_attachments_test.cpp ${APP_TEST_SOURCES})
+    target_include_directories(message_attachments_test PRIVATE ${APP_TEST_INCLUDES})
+    target_link_libraries(message_attachments_test PRIVATE Qt5::Widgets Qt5::Network md4c)
+    if(WIN32)
+        target_link_libraries(message_attachments_test PRIVATE dwmapi)
+    endif()
+    target_include_directories(chat_context_integration_test PRIVATE ${APP_TEST_INCLUDES})
+    target_link_libraries(chat_context_integration_test PRIVATE Qt5::Widgets Qt5::Network md4c)
+    if(WIN32)
+        target_link_libraries(chat_context_integration_test PRIVATE dwmapi)
+    endif()
+    add_executable(chat_ui_integration_test EXCLUDE_FROM_ALL tests/chat_ui_integration_test.cpp ${APP_TEST_SOURCES})
+    target_include_directories(chat_ui_integration_test PRIVATE ${APP_TEST_INCLUDES})
+    target_link_libraries(chat_ui_integration_test PRIVATE Qt5::Widgets Qt5::Network md4c)
+    if(WIN32)
+        target_link_libraries(chat_ui_integration_test PRIVATE dwmapi)
     endif()
 endif()

@@ -14,6 +14,7 @@ class SidebarWidget : public QWidget {
     QListView* chatListView_;
     QPushButton* btnShowChat_;
     QPushButton* btnShowDocuments_;
+    bool changingRows_ = false;
 public:
     explicit SidebarWidget(QAbstractItemModel* chatModel,
                            QWidget* parent = nullptr);
@@ -26,4 +27,5 @@ signals:
     void chatPageRequested();
     void documentsPageRequested();
     void chatSelected(const QString& chatId);
+    void deleteChatRequested(const QString& chatId);
 };

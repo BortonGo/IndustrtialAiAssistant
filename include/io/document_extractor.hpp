@@ -17,7 +17,8 @@ struct DocumentExtractionConfig {
     int inactivityTimeoutMs = 360000;
 };
 
-bool parseDocumentContent(const QByteArray& json, Document& document, QString& error);
+// Fresh extraction requires files; storage restoration can retain a broken document for diagnostics.
+bool parseDocumentContent(const QByteArray& json, Document& document, QString& error, bool requireImageFiles = true);
 
 class DocumentExtractor final : public QObject {
     Q_OBJECT

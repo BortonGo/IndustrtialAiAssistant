@@ -5,7 +5,7 @@
 #include <QFileInfo>
 #include <cmath>
 
-bool parseDocumentContent(const QByteArray& json, Document& document, QString& error)
+bool parseDocumentContent(const QByteArray& json, Document& document, QString& error, bool requireImageFiles)
 {
     auto fail = [&error](const QString& message) { error = message; return false; };
     QJsonParseError parseError;
@@ -48,7 +48,7 @@ bool parseDocumentContent(const QByteArray& json, Document& document, QString& e
                 if (!object.value("imagePath").isString()) return fail("Image path must be a string");
                 block.imagePath = object.value("imagePath").toString();
                 const QFileInfo image(block.imagePath);
-                if (!image.isAbsolute() || !image.isFile() || !image.isReadable())
+                if (!image.isAbsolute() || (requireImageFiles && (!image.isFile() || !image.isReadable())))
                     return fail("Image file is unavailable: " + block.imagePath);
             }
         } else if (type == "table") {

@@ -10,6 +10,13 @@ enum class MessageRole {
     Assistant
 };
 
+struct MessageAttachment {
+    QString fileName;
+    QString sourcePath;
+    QString documentId;
+    QString previewPath;
+};
+
 struct ChatMessage final {
     QString id;
     QString chatId;
@@ -19,6 +26,7 @@ struct ChatMessage final {
     QString status = "complete";
     QString error;
     QString contextSnapshot;
+    std::vector<MessageAttachment> attachments;
 };
 
 struct Chat final {

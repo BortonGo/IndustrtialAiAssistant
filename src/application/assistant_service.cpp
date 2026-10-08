@@ -1,5 +1,6 @@
 #include "assistant_service.hpp"
 #include "document_chunker.h"
+#include "rag/document_context.hpp"
 #include "embedding_client.hpp"
 #include "lmstudio_llm_client.hpp"
 #include "mcp_client.hpp"
@@ -49,8 +50,10 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
     const auto projector = settings.value("models/chatMmproj").toString();
     if (!projector.isEmpty()) projectorPath_ = root.filePath(projector);
     chatGpuLayers_ = settings.value("models/chatGpuLayers", "20").toString();
+    chatKvCacheType_ = settings.value("models/chatKvCacheType", "f16").toString().trimmed().toLower();
     projectorOnGpu_ = settings.value("models/mmprojGpu", true).toBool();
     chatContextSize_ = qBound(4096, settings.value("models/chatContextSize", 8192).toInt(), 32768);
+    maxAnswerTokens_ = qBound(128, settings.value("models/maxAnswerTokens", 4096).toInt(), chatContextSize_ / 2);
 
     storage_ = new StorageClient(runtimeRoot_, embeddingModelPath_, this);
     connect(storage_, &StorageClient::statusChanged, this, [this](const QString& text) {
@@ -80,12 +83,22 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
         }
     }
     documentManager_ = new DocumentManager(documentConfig, this);
+    visibleDocuments_ = new DocumentManager(documentConfig, this);
+    connect(documentManager_, &DocumentManager::documentLoaded, this, [this]() { syncVisibleDocuments(); });
+    connect(documentManager_, &DocumentManager::documentStatusChanged, this, [this]() { syncVisibleDocuments(); });
+    connect(this, &AssistantService::busyChanged, this, [this]() {
+        if (state_ == AssistantState::Idle && !loadingChat_ && visibleChatId_ == activeChatId_) {
+            visibleIndex_ = vectorStore_;
+            syncVisibleDocuments();
+        }
+    });
 
     connect(documentManager_, &DocumentManager::errorOccurred, this, [this](const QString& message) {
+        if (importingAttachments_) { failAttachment(message); return; }
         if (state_ == AssistantState::Reading) {
             state_ = AssistantState::Idle;
             busy_ = false;
-            emit busyChanged(false);
+            emit busyChanged(isBusy());
             emit documentProgress(message, false);
         }
         if (!shuttingDown_ && message != QStringLiteral("Обработка документа отменена")) emit errorOccurred(message);
@@ -120,14 +133,13 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
         const bool wasQuerying = state_ == AssistantState::Querying;
         if (state_ == AssistantState::Indexing) {
             emit documentProgress(QStringLiteral("Ошибка индексации"), false);
-            documentManager_->setDocumentStatus(indexingDocumentId_, DocumentStatus::Error);
-            vectorStore_.removeDocument(indexingDocumentId_);
-            indexingDocumentId_.clear();
+            finishDocumentIndexing(false);
         }
         pendingBatchSize_ = 0;
         state_ = AssistantState::Idle;
         busy_ = false;
-        emit busyChanged(false);
+        emit busyChanged(isBusy());
+        if (importingAttachments_) { failAttachment(message); return; }
         if (wasQuerying) {
             emit questionFailed(message);
             tryStartNextDocument();
@@ -140,28 +152,33 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
             this, [this](const std::vector<double> &embedding) {
         if (state_ == AssistantState::Querying) {
             try {
-                const auto result = vectorStore_.search(embedding, 3);
-                emit retrievalReady(result);
-                QString context;
-                QStringList images;
-                for (const auto& r : result) {
-                    if (!r.chunk.imagePath.isEmpty() && !images.contains(r.chunk.imagePath))
-                        images.append(r.chunk.imagePath);
-                    context += r.chunk.sourceDescription() +
-                            "\nSimilarity: " + QString::number(r.score) + "\n\n" + r.chunk.text + "\n\n";
-                    if (!r.chunk.imagePath.isEmpty())
-                        context += QStringLiteral("Прикреплённое изображение №%1 относится к этому источнику.\n\n")
-                                .arg(images.indexOf(r.chunk.imagePath) + 1);
+                std::vector<const Document*> documents;
+                for (int i = 0; i < documentManager_->documentCount(); ++i) documents.push_back(documentManager_->documentAt(i));
+                std::vector<ContextSource> sources;
+                if (!attachedDocumentIds_.isEmpty()) {
+                    for (const auto& id : attachedDocumentIds_) {
+                        const QStringList scope{id};
+                        const auto result = vectorStore_.search(embedding, 4, scope);
+                        auto fileSources = DocumentContext::collect(pendingQuestion_, documents, result, scope);
+                        if (fileSources.empty()) throw std::invalid_argument("Attached document has no searchable content");
+                        const auto firstGroup = fileSources.front().groupId;
+                        for (auto& source : fileSources) if (source.groupId == firstGroup) source.required = true;
+                        sources.insert(sources.end(), fileSources.begin(), fileSources.end());
+                    }
+                } else {
+                    const auto scope = DocumentContext::namedDocuments(pendingQuestion_, documents);
+                    const auto result = vectorStore_.search(embedding, 12, scope);
+                    emit retrievalReady(result);
+                    sources = DocumentContext::collect(pendingQuestion_, documents, result, scope);
                 }
-                if (!result.empty()) {
-                    context += "\nПоказатели компьютера:\n" + buildSystemStatusContext();
+                if (!sources.empty()) {
                     state_ = AssistantState::Generating;
-                    generateSavedContext(context, images);
+                    prepareContext(sources);
                     return;
                 } else {
                     state_ = AssistantState::Idle;
                     busy_ = false;
-                    emit busyChanged(false);
+                    emit busyChanged(isBusy());
                     emit questionFailed("Empty result");
                     tryStartNextDocument();
                     return;
@@ -169,7 +186,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
             } catch (const std::invalid_argument & e) {
                 state_ = AssistantState::Idle;
                 busy_ = false;
-                emit busyChanged(false);
+                emit busyChanged(isBusy());
                 emit questionFailed(QString::fromUtf8(e.what()));
                 tryStartNextDocument();
                 return;
@@ -195,19 +212,15 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
                 VectorStore::Entry entry;
                 entry.chunk = chunks_[nextChunkIndex_ + i];
                 entry.embedding = embeddings[i];
-                vectorStore_.add(entry);
+                pendingIndex_.add(entry);
             }
         } catch (const std::invalid_argument& e) {
             emit documentProgress(QStringLiteral("Ошибка индексации"), false);
-            documentManager_->setDocumentStatus(
-                indexingDocumentId_, DocumentStatus::Error);
-            vectorStore_.removeDocument(indexingDocumentId_);
-
-            indexingDocumentId_.clear();
-            pendingBatchSize_ = 0;
+            finishDocumentIndexing(false);
             state_ = AssistantState::Idle;
 
-            emit busyChanged(false);
+            emit busyChanged(isBusy());
+            if (importingAttachments_) { failAttachment(QString::fromUtf8(e.what())); return; }
             emit errorOccurred(QString::fromUtf8(e.what()));
             tryStartNextDocument();
             return;
@@ -221,18 +234,23 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
         if (nextChunkIndex_ == chunks_.size()) {
             const auto* document = documentManager_->findDocument(indexingDocumentId_);
             QJsonArray entries;
-            for (const auto& entry : vectorStore_.documentEntries(indexingDocumentId_)) entries.append(entryToJson(entry));
+            for (const auto& entry : pendingIndex_.documentEntries(indexingDocumentId_)) entries.append(entryToJson(entry));
             const auto id = indexingDocumentId_;
-            const bool warnings = !document->warnings.isEmpty();
             state_ = AssistantState::Saving;
             emit documentProgress(QStringLiteral("Сохранение документа и индекса в PostgreSQL…"), false);
             storage_->request("save_document", {{"chatId",activeChatId_},{"document",documentToJson(*document)},{"entries",entries}},
-                              [this,id,warnings](const QJsonObject&, const QString& error) {
-                documentManager_->setDocumentStatus(id, error.isEmpty() ? (warnings ? DocumentStatus::ReadyWithWarnings : DocumentStatus::Ready) : DocumentStatus::Error);
-                if (!error.isEmpty()) { vectorStore_.removeDocument(id); emit errorOccurred(QStringLiteral("Документ не сохранён: ") + error); }
+                              [this,id](const QJsonObject&, const QString& error) {
+                if (shuttingDown_ || state_ != AssistantState::Saving || indexingDocumentId_ != id) return;
+                finishDocumentIndexing(error.isEmpty());
+                if (!error.isEmpty() && !importingAttachments_) emit errorOccurred(QStringLiteral("Документ не сохранён: ") + error);
                 emit documentProgress(error.isEmpty() ? QStringLiteral("Документ сохранён и готов к поиску") : QStringLiteral("Ошибка сохранения документа"), false);
                 indexingDocumentId_.clear(); state_ = AssistantState::Idle; busy_ = false;
-                emit busyChanged(false); tryStartNextDocument();
+                if (importingAttachments_) {
+                    if (!error.isEmpty()) failAttachment(QStringLiteral("Документ не сохранён: ") + error);
+                    else bindAttachment(id);
+                    return;
+                }
+                emit busyChanged(isBusy()); tryStartNextDocument();
             });
             return;
         }
@@ -247,21 +265,39 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
     };
 
     llmClient_ = new LMStudioLLMClient(chatConfig, this);
+    connect(llmClient_, &ILLMClient::contextPrepared, this, [this](const QString& sources, const QString& budget) {
+        if (shuttingDown_ || state_ != AssistantState::Generating) return;
+        emit serverLogMessage(QStringLiteral("Контекст"), budget);
+        const auto messageId = requestMessageId_;
+        if (messageId.isEmpty()) { llmClient_->generatePrepared(); return; }
+        storage_->request("save_context", {{"id",messageId},{"context",sources}},
+                          [this,messageId,sources](const QJsonObject&, const QString& error) {
+            if (shuttingDown_ || state_ != AssistantState::Generating || requestMessageId_ != messageId) return;
+            if (error.isEmpty()) { emit contextSaved(messageId, sources); llmClient_->generatePrepared(); }
+            else { state_ = AssistantState::Idle; busy_ = false; emit busyChanged(isBusy()); emit questionFailed(error); }
+        });
+    });
+
+    connect(llmClient_, &ILLMClient::answerProgress, this, [this](const QString& text) {
+        if (!shuttingDown_ && state_ == AssistantState::Generating) emit answerProgress(requestMessageId_, text);
+    });
 
     connect (llmClient_, &ILLMClient::answerReady,
              this, [this](const QString& answer) {
+        if (shuttingDown_ || state_ != AssistantState::Generating) return;
         state_ = AssistantState::Idle;
         busy_ = false;
-        emit busyChanged(false);
+        emit busyChanged(isBusy());
         emit answerReady(answer);
         tryStartNextDocument();
     });
 
     connect (llmClient_, &ILLMClient::errorOccurred,
              this, [this](const QString& message) {
+        if (shuttingDown_ || state_ != AssistantState::Generating) return;
         state_ = AssistantState::Idle;
         busy_ = false;
-        emit busyChanged(false);
+        emit busyChanged(isBusy());
         emit questionFailed(message);
         tryStartNextDocument();
     });
@@ -289,7 +325,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
 
 bool AssistantService::askQuestion(const QString &question) { return askQuestion(question, {}); }
 
-bool AssistantService::askQuestion(const QString &question, const QString& messageId) {
+bool AssistantService::askQuestion(const QString &question, const QString& messageId, const QString& chatId, const QStringList& attachments) {
     if (!modelsReady()) {
         return false;
     }
@@ -303,61 +339,184 @@ bool AssistantService::askQuestion(const QString &question, const QString& messa
         return false;
     }
     requestMessageId_ = messageId;
+    pendingAttachmentPaths_ = attachments; attachedDocumentIds_.clear(); nextAttachment_ = 0;
+    importingAttachments_ = !attachments.isEmpty();
     pendingQuestion_ = question;
+    const auto targetChat = chatId.isEmpty() ? visibleChatId_ : chatId;
+    if (targetChat.isEmpty()) return false;
+    state_ = AssistantState::Preparing;
+    busy_ = true;
+    emit busyChanged(true);
+    if (targetChat == activeChatId_) {
+        startQuestion();
+    } else if (targetChat == visibleChatId_ && !loadingChat_) {
+        copyVisibleWorkspace();
+        startQuestion();
+    } else {
+        storage_->request("load_chat", {{"chatId",targetChat},{"remember",false}},
+                          [this,targetChat,messageId](const QJsonObject& data, const QString& error) {
+            if (shuttingDown_ || state_ != AssistantState::Preparing || requestMessageId_ != messageId) return;
+            QString failure = error;
+            if (failure.isEmpty()) {
+                try {
+                    std::vector<Document> documents;
+                    VectorStore::InMemoryVectorStore index;
+                    for (const auto& value : data.value("documents").toArray()) documents.push_back(documentFromJson(value.toObject()));
+                    for (const auto& value : data.value("entries").toArray()) index.add(entryFromJson(value.toObject()));
+                    activeChatId_ = targetChat;
+                    documentManager_->restore(std::move(documents)); vectorStore_ = std::move(index);
+                } catch (const std::exception& e) { failure = QString::fromUtf8(e.what()); }
+            }
+            if (!failure.isEmpty()) { importingAttachments_ = false; state_ = AssistantState::Idle; busy_ = false; emit busyChanged(isBusy()); emit questionFailed(failure); return; }
+            startQuestion();
+        });
+    }
+    return true;
+}
+
+void AssistantService::startQuestion() {
+    if (importingAttachments_) { prepareNextAttachment(); return; }
     if (vectorStore_.empty()) {
         state_ = AssistantState::Generating;
         busy_ = true;
         emit busyChanged(true);
-        generateSavedContext(buildSystemStatusContext());
-        return true;
+        prepareContext();
+        return;
     }
 
     state_ = AssistantState::Querying;
     busy_ = true;
     emit busyChanged(true);
-    pendingQuestion_ = question;
-    embeddingClient_->requestEmbedding(question);
-    return true;
+    embeddingClient_->requestEmbedding(pendingQuestion_);
 }
 
-void AssistantService::generateSavedContext(const QString& context, const QStringList& images) {
+void AssistantService::prepareNextAttachment() {
+    if (nextAttachment_ >= pendingAttachmentPaths_.size()) {
+        importingAttachments_ = false; startQuestion(); return;
+    }
+    const auto path = pendingAttachmentPaths_[nextAttachment_];
+    state_ = AssistantState::Reading; busy_ = true;
+    emit busyChanged(isBusy());
+    emit documentProgress(QStringLiteral("Вложение %1/%2: %3").arg(nextAttachment_ + 1)
+                          .arg(pendingAttachmentPaths_.size()).arg(QFileInfo(path).fileName()), true);
+    // A file may have changed since its previous upload. Refresh its index;
+    // the image-description cache still avoids repeated vision work.
+    documentManager_->loadFile(path, true);
+}
+
+void AssistantService::bindAttachment(const QString& documentId) {
+    state_ = AssistantState::Preparing; busy_ = true;
+    const auto questionId = requestMessageId_;
+    emit documentProgress(QStringLiteral("Сохранение вложения сообщения…"), false);
+    storage_->request("bind_attachment", {{"questionId",questionId},{"position",nextAttachment_},{"documentId",documentId}},
+        [this,questionId,documentId](const QJsonObject& data, const QString& error) {
+        if (shuttingDown_ || !importingAttachments_ || questionId != requestMessageId_) return;
+        if (!error.isEmpty()) { failAttachment(error); return; }
+        attachedDocumentIds_.append(documentId); ++nextAttachment_;
+        emit attachmentsSaved(questionId, data.value("attachments").toArray());
+        prepareNextAttachment();
+    });
+}
+
+void AssistantService::failAttachment(const QString& error) {
+    importingAttachments_ = false;
+    indexingQueue_.clear(); state_ = AssistantState::Idle; busy_ = false;
+    emit busyChanged(isBusy());
+    emit documentProgress(QStringLiteral("Обработка вложений остановлена"), false);
+    emit questionFailed(QStringLiteral("Не удалось подготовить вложение: ") + error);
+}
+
+void AssistantService::prepareContext(const std::vector<ContextSource>& sources) {
+    GenerationRequest request;
+    request.question = pendingQuestion_; request.sources = sources;
+    for (const auto& path : pendingAttachmentPaths_) request.attachedFiles.append(QFileInfo(path).fileName());
+    request.systemStatus = buildSystemStatusContext();
+    request.contextSize = chatContextSize_; request.maxAnswerTokens = maxAnswerTokens_;
     if (requestMessageId_.isEmpty()) {
-        llmClient_->generate(context, pendingQuestion_, images);
+        llmClient_->prepare(request);
         return;
     }
-    storage_->request("save_context", {{"id",requestMessageId_},{"context",context}},
-                      [this,context,images](const QJsonObject&, const QString& error) {
-        if (shuttingDown_) return;
+    const auto messageId = requestMessageId_;
+    storage_->request("question_history", {{"questionId",messageId},{"chatId",activeChatId_}},
+                      [this,request,messageId](const QJsonObject& data, const QString& error) mutable {
+        if (shuttingDown_ || state_ != AssistantState::Generating || requestMessageId_ != messageId) return;
         if (error.isEmpty()) {
-            emit contextSaved(requestMessageId_, context);
-            llmClient_->generate(context, pendingQuestion_, images);
+            for (const auto& value : data.value("pairs").toArray()) {
+                const auto pair = value.toObject();
+                request.history.push_back({pair.value("question").toString(), pair.value("answer").toString()});
+            }
+            llmClient_->prepare(request);
         }
-        else { state_ = AssistantState::Idle; busy_ = false; emit busyChanged(false); emit questionFailed(error); }
+        else { state_ = AssistantState::Idle; busy_ = false; emit busyChanged(isBusy()); emit questionFailed(error); }
     });
 }
 
 void AssistantService::activateChat(const QString& chatId, std::function<void(const QString&)> callback) {
-    if (isBusy()) { callback(QStringLiteral("Дождитесь завершения текущей операции")); return; }
-    state_ = AssistantState::Restoring;
+    const auto version = ++selectionVersion_;
+    visibleChatId_ = chatId; loadingChat_ = true;
+    visibleDocuments_->restore({}); visibleIndex_ = {};
     emit busyChanged(true);
-    storage_->request("load_chat", {{"chatId",chatId}}, [this,chatId,callback](const QJsonObject& data, const QString& error) {
+    const auto method = chatId == activeChatId_ ? "select_chat" : "load_chat";
+    std::vector<Document> cachedDocuments;
+    VectorStore::InMemoryVectorStore cachedIndex;
+    const bool cached = chatId == activeChatId_;
+    if (cached) {
+        for (int i = 0; i < documentManager_->documentCount(); ++i) cachedDocuments.push_back(*documentManager_->documentAt(i));
+        cachedIndex = vectorStore_;
+    }
+    storage_->request(method, {{"chatId",chatId}}, [this,chatId,version,callback,cached,cachedDocuments,cachedIndex](const QJsonObject& data, const QString& error) {
+        if (shuttingDown_ || version != selectionVersion_) return;
         QString failure = error;
         if (failure.isEmpty()) {
             try {
-                std::vector<Document> documents;
-                VectorStore::InMemoryVectorStore index;
-                for (const auto& value : data.value("documents").toArray()) documents.push_back(documentFromJson(value.toObject()));
-                for (const auto& value : data.value("entries").toArray()) index.add(entryFromJson(value.toObject()));
-                vectorStore_ = std::move(index);
-                documentManager_->restore(std::move(documents));
-                activeChatId_ = chatId;
-                emit retrievalReady({});
-                emit documentProgress(QStringLiteral("Документы текущего чата восстановлены из БД"), false);
+                if (chatId == activeChatId_) {
+                    syncVisibleDocuments(); visibleIndex_ = vectorStore_;
+                } else if (cached) {
+                    visibleDocuments_->restore(cachedDocuments); visibleIndex_ = cachedIndex;
+                } else {
+                    std::vector<Document> documents;
+                    VectorStore::InMemoryVectorStore index;
+                    for (const auto& value : data.value("documents").toArray()) documents.push_back(documentFromJson(value.toObject()));
+                    for (const auto& value : data.value("entries").toArray()) index.add(entryFromJson(value.toObject()));
+                    visibleDocuments_->restore(std::move(documents)); visibleIndex_ = std::move(index);
+                }
             } catch (const std::exception& e) { failure = QString::fromUtf8(e.what()); }
         }
-        state_ = AssistantState::Idle;
-        emit busyChanged(false); updateModelsReady(); callback(failure);
+        loadingChat_ = false;
+        if (!failure.isEmpty()) visibleChatId_.clear();
+        emit busyChanged(isBusy()); updateModelsReady(); callback(failure);
+        if (failure.isEmpty()) emit chatActivated(chatId);
     });
+}
+
+void AssistantService::forgetChat(const QString& id) {
+    if (id == operationChatId()) return;
+    if (activeChatId_ == id) {
+        activeChatId_.clear(); documentManager_->restore({}); vectorStore_.clear();
+        chunks_.clear(); pendingIndex_.clear(); indexingQueue_.clear(); indexingDocumentId_.clear();
+    }
+    if (visibleChatId_ == id) {
+        ++selectionVersion_; visibleChatId_.clear(); loadingChat_ = false;
+        visibleDocuments_->restore({}); visibleIndex_.clear();
+    }
+}
+
+void AssistantService::syncVisibleDocuments() {
+    if (visibleChatId_ != activeChatId_) return;
+    std::vector<Document> documents;
+    for (int i = 0; i < documentManager_->documentCount(); ++i) documents.push_back(*documentManager_->documentAt(i));
+    visibleDocuments_->restore(std::move(documents));
+}
+
+void AssistantService::copyVisibleWorkspace() {
+    std::vector<Document> documents;
+    for (int i = 0; i < visibleDocuments_->documentCount(); ++i) documents.push_back(*visibleDocuments_->documentAt(i));
+    activeChatId_ = visibleChatId_;
+    documentManager_->restore(std::move(documents)); vectorStore_ = visibleIndex_;
+}
+
+QString AssistantService::operationChatId() const {
+    return state_ != AssistantState::Idle && state_ != AssistantState::Preparing ? activeChatId_ : QString();
 }
 
 void AssistantService::loadDocument(const QString& path) {
@@ -365,10 +524,11 @@ void AssistantService::loadDocument(const QString& path) {
         emit errorOccurred(QStringLiteral("Дождитесь готовности серверов моделей"));
         return;
     }
-    if (isBusy()) {
+    if (isBusy() || visibleChatId_.isEmpty()) {
         emit errorOccurred(QStringLiteral("Дождитесь завершения текущей операции"));
         return;
     }
+    copyVisibleWorkspace();
     state_ = AssistantState::Reading;
     emit busyChanged(true);
     emit documentProgress(QStringLiteral("Чтение документа…"), true);
@@ -381,19 +541,17 @@ void AssistantService::cancelDocument()
         documentManager_->cancelLoading();
     } else if (state_ == AssistantState::Indexing) {
         embeddingClient_->cancelRequests();
-        vectorStore_.removeDocument(indexingDocumentId_);
-        documentManager_->setDocumentStatus(indexingDocumentId_, DocumentStatus::Error);
-        indexingDocumentId_.clear();
-        pendingBatchSize_ = 0;
+        finishDocumentIndexing(false);
         state_ = AssistantState::Idle;
         busy_ = false;
-        emit busyChanged(false);
+        emit busyChanged(isBusy());
         emit documentProgress(QStringLiteral("Индексация отменена"), false);
+        if (importingAttachments_) failAttachment(QStringLiteral("Индексация отменена"));
     }
 }
 
 DocumentManager* AssistantService::documentManager() const {
-    return documentManager_;
+    return visibleDocuments_;
 }
 
 QString AssistantService::buildSystemStatusContext() const {
@@ -416,34 +574,45 @@ bool AssistantService::startDocumentIndexing(const QString& documentId) {
         return false;
     }
 
+    indexingDocumentId_ = documentId;
+    pendingIndex_.clear();
+
     std::vector<Chunk> chunks;
 
     try {
         chunks = DocumentChunker::chunkDocument(*d, 500, 100);
     } catch (const std::invalid_argument &e) {
-        documentManager_->setDocumentStatus(documentId, DocumentStatus::Error);
+        finishDocumentIndexing(false);
         emit errorOccurred(QString::fromUtf8(e.what()));
         return false;
     }
 
     chunks_ = std::move(chunks);
 
-    emit documentLoaded(QFileInfo(d->sourcePath).fileName(), d->text.size());
-
     if (chunks_.empty()) {
-        documentManager_->setDocumentStatus(documentId, DocumentStatus::Error);
+        finishDocumentIndexing(false);
         emit errorOccurred("Vector chunks_ is empty");
         return false;
     }
     indexingDocumentId_ = documentId;
     documentManager_->setDocumentStatus(indexingDocumentId_, DocumentStatus::Indexing);
-    vectorStore_.removeDocument(indexingDocumentId_);
     nextChunkIndex_ = 0;
     pendingBatchSize_ = 0;
     state_ = AssistantState::Indexing;
+    emit documentLoaded(QFileInfo(d->sourcePath).fileName(), d->text.size());
     emit busyChanged(true);
     requestNextEmbeddingBatch();
     return true;
+}
+
+void AssistantService::finishDocumentIndexing(bool success) {
+    const auto id = indexingDocumentId_;
+    if (success) vectorStore_.replaceDocument(id, pendingIndex_.documentEntries(id));
+    pendingIndex_.clear();
+    chunks_.clear();
+    indexingDocumentId_.clear();
+    pendingBatchSize_ = 0;
+    if (!id.isEmpty()) documentManager_->finishIndexing(id, success);
 }
 
 void AssistantService::tryStartNextDocument() {
@@ -456,7 +625,9 @@ void AssistantService::tryStartNextDocument() {
         if (startDocumentIndexing(id)) {
             return;
         }
+        if (importingAttachments_) { failAttachment(QStringLiteral("Не удалось построить индекс вложения")); return; }
     }
+    emit busyChanged(isBusy());
 }
 
 void AssistantService::requestNextEmbeddingBatch() {
@@ -500,13 +671,13 @@ AssistantService::~AssistantService()
 
 bool AssistantService::modelsReady() const
 {
-    return !shuttingDown_ && storage_->isReady() && !activeChatId_.isEmpty() && chatServer_ && embeddingServer_ &&
+    return !shuttingDown_ && storage_->isReady() && chatServer_ && embeddingServer_ &&
            chatServer_->isReady() && embeddingServer_->isReady();
 }
 
 bool AssistantService::isBusy() const
 {
-    return busy_ || state_ != AssistantState::Idle;
+    return busy_ || state_ != AssistantState::Idle || loadingChat_;
 }
 
 QString AssistantService::chatServerStatus() const { return chatServerStatus_; }
@@ -606,6 +777,15 @@ void AssistantService::launchServers(bool useCuda)
         << "--ctx-size" << QString::number(chatContextSize_) << "--parallel" << "1"
         << "--gpu-layers" << (useCuda ? chatGpuLayers_ : QString("0"))
         << "--jinja" << "--reasoning" << "off" << "--cache-ram" << "0";
+    // Quantized V cache requires Flash Attention. Keep the CPU fallback at F16.
+    const auto cacheType = useCuda && chatKvCacheType_ == "q8_0" ? QString("q8_0") : QString("f16");
+    chatConfig.arguments << "--cache-type-k" << cacheType << "--cache-type-v" << cacheType;
+    if (cacheType == "q8_0") chatConfig.arguments << "--flash-attn" << "on";
+    if (chatKvCacheType_ != "f16" && chatKvCacheType_ != "q8_0")
+        emit serverLogMessage("Qwen", QStringLiteral("Неизвестный chatKvCacheType; используется f16. Допустимы f16 и q8_0."));
+    emit serverLogMessage("Qwen", QStringLiteral("Настройки памяти: слоёв на GPU %1, KV-кэш %2, окно %3; обработчик изображений: %4")
+        .arg(useCuda ? chatGpuLayers_ : QString("0")).arg(cacheType).arg(chatContextSize_)
+        .arg(useCuda && projectorOnGpu_ ? QString("GPU") : QString("CPU")));
     if (QFileInfo(projectorPath_).isFile()) {
         chatConfig.arguments << "--mmproj" << projectorPath_ << "--image-max-tokens" << "1024";
         if (!useCuda || !projectorOnGpu_) chatConfig.arguments << "--no-mmproj-offload";
@@ -664,17 +844,14 @@ void AssistantService::handleServerFailure(const QString& message)
     llmClient_->cancelRequests();
     documentManager_->cancelLoading();
     emit documentProgress(QStringLiteral("Обработка остановлена: сервер недоступен"), false);
-    const bool questionPending = state_ == AssistantState::Querying || state_ == AssistantState::Generating;
-    if (state_ == AssistantState::Indexing) {
-        documentManager_->setDocumentStatus(indexingDocumentId_, DocumentStatus::Error);
-        vectorStore_.removeDocument(indexingDocumentId_);
-        indexingDocumentId_.clear();
-    }
+    const bool questionPending = importingAttachments_ || state_ == AssistantState::Preparing || state_ == AssistantState::Querying || state_ == AssistantState::Generating;
+    importingAttachments_ = false;
+    if (state_ == AssistantState::Indexing || state_ == AssistantState::Saving) finishDocumentIndexing(false);
     pendingBatchSize_ = 0;
     pendingQuestion_.clear();
     state_ = AssistantState::Idle;
     busy_ = false;
-    emit busyChanged(false);
+    emit busyChanged(isBusy());
     updateModelsReady();
     if (questionPending) {
         emit questionFailed(message);

@@ -10,6 +10,7 @@ class ChatListModel : public QAbstractListModel {
     Q_OBJECT
     ChatManager* manager_;
 public:
+    enum Roles { ChatIdRole = Qt::UserRole, CanDeleteRole = Qt::UserRole + 1 };
     explicit ChatListModel(ChatManager* manager, QObject* parent = nullptr);
 
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;

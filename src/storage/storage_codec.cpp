@@ -2,6 +2,7 @@
 #include "io/document_extractor.hpp"
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QFileInfo>
 #include <stdexcept>
 
 QJsonObject documentToJson(const Document& document) {
@@ -28,11 +29,22 @@ QJsonObject documentToJson(const Document& document) {
 Document documentFromJson(const QJsonObject& value) {
     Document result;
     QString error;
-    if (!parseDocumentContent(QJsonDocument(value).toJson(), result, error)) throw std::runtime_error(error.toUtf8().constData());
+    if (!parseDocumentContent(QJsonDocument(value).toJson(), result, error, false)) throw std::runtime_error(error.toUtf8().constData());
     result.id = value.value("id").toString();
     result.sourcePath = value.value("sourcePath").toString();
     const auto status = value.value("status").toString();
     result.status = status == "Ready" ? DocumentStatus::Ready : status == "ReadyWithWarnings" ? DocumentStatus::ReadyWithWarnings : DocumentStatus::Error;
+    for (const auto& block : result.blocks) {
+        if (block.type != DocumentBlockType::Image) continue;
+        const QFileInfo image(block.imagePath);
+        if (!image.isFile() || !image.isReadable()) {
+            result.status = DocumentStatus::Error;
+            const auto warning = QStringLiteral("Отсутствует или недоступно сохранённое изображение: ") + block.imagePath;
+            bool reported = false;
+            for (const auto& existing : result.warnings) if (existing.contains(block.imagePath)) reported = true;
+            if (!reported) result.warnings.append(warning);
+        }
+    }
     return result;
 }
 

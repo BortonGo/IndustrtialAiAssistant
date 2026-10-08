@@ -49,7 +49,8 @@ namespace VectorStore {
         entries.push_back(entry);
     }
 
-    std::vector<SearchResult> InMemoryVectorStore::search(const std::vector<double> &queryEmbedding, std::size_t topK) const {
+    std::vector<SearchResult> InMemoryVectorStore::search(const std::vector<double> &queryEmbedding, std::size_t topK,
+                                                        const QStringList& documentIds) const {
         if (topK == 0 || entries.empty()) {
             return {};
         }
@@ -70,6 +71,7 @@ namespace VectorStore {
         }
         std::vector<SearchResult> result;
         for (const auto& c : entries) {
+            if (!documentIds.isEmpty() && !documentIds.contains(c.chunk.documentId)) continue;
             SearchResult sr {};
             sr.chunk = c.chunk;
             sr.score = cosineSimilarity(c.embedding, queryEmbedding);
@@ -87,6 +89,29 @@ namespace VectorStore {
             return entry.chunk.documentId == documentId;
         });
         entries.erase(newEnd, entries.end());
+    }
+
+    void InMemoryVectorStore::replaceDocument(const QString& documentId, std::vector<Entry> replacement) {
+        if (documentId.isEmpty() || replacement.empty()) throw std::invalid_argument("Empty replacement index");
+        const auto dimension = entries.empty() ? replacement.front().embedding.size() : entries.front().embedding.size();
+        for (const auto& entry : replacement) {
+            if (entry.chunk.documentId != documentId || entry.embedding.empty() || entry.embedding.size() != dimension)
+                throw std::invalid_argument("Invalid replacement document or embedding dimension");
+            bool nonzero = false;
+            for (const auto value : entry.embedding) {
+                if (!std::isfinite(value)) throw std::invalid_argument("Non-finite replacement embedding");
+                nonzero = nonzero || value != 0.0;
+            }
+            if (!nonzero) throw std::invalid_argument("Zero replacement embedding");
+        }
+        const auto retained = std::count_if(entries.begin(), entries.end(), [&](const Entry& entry) {
+            return entry.chunk.documentId != documentId;
+        });
+        // Validate and allocate before touching the searchable version. The incoming
+        // entries already own their vectors; moving them below needs no allocations.
+        entries.reserve(static_cast<std::size_t>(retained) + replacement.size());
+        removeDocument(documentId);
+        for (auto& entry : replacement) entries.push_back(std::move(entry));
     }
 
     void InMemoryVectorStore::clear() {

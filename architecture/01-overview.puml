@@ -7,11 +7,14 @@ package "Qt 5.7 / C++" {
   component "Виджеты и модели списков" as UI
   component ChatManager as Chat
   component AssistantService as Service
-  component "DocumentManager\nдокументы текущего чата" as Docs
-  component "InMemoryVectorStore\nиндекс текущего чата" as Index
+  component "DocumentManager × 2\nдокументы на экране / документы задачи" as Docs
+  component "InMemoryVectorStore\nиндекс задачи / выбранного чата" as Index
+  component "DocumentContext\nимя файла / таблицы / примечания" as DocumentContext
   component "StorageClient\nасинхронный JSON / stdio" as Storage
   component "HTTP-клиенты моделей" as Models
-  component "Следующий блок: ContextBuilder\nистория + источники + бюджет токенов" as Context #493823
+  component "ContextBuilder\nистория + источники + бюджет токенов" as Context
+  component "context_selection\nкатегория вопроса + отбор данных" as Selection
+  component "system_status_policy\nCPU/RAM только по запросу" as StatusPolicy
 }
 package "Локальные процессы" {
   component "storage_tools/server.py\nRepository / psycopg" as Worker
@@ -20,7 +23,7 @@ package "Локальные процессы" {
   component "llama-server × 2\nQwen3-VL / EmbeddingGemma" as Servers
   component "MCP server\nCPU / RAM" as MCP
 }
-folder "storage-data/images\nпостоянные изображения" as Images
+folder "storage-data/images\nпостоянные изображения" as Images #24262B
 User --> UI
 UI --> Chat
 Chat --> Service
@@ -28,6 +31,7 @@ Chat --> Storage
 Service --> Storage
 Service --> Docs
 Service --> Index
+Service --> DocumentContext : связанные источники из блоков
 Service --> Models
 Service --> MCP
 Docs --> Extract
@@ -35,11 +39,16 @@ Extract --> Servers : распознавание
 Models --> Servers : HTTP
 Storage --> Worker : запросы с id / ответы
 Worker --> DB : SQL / транзакции
-Worker --> Images : сохранение / восстановление
-Service ..> Context
+Worker --> Images : сохранение / восстановление / очистка после удаления
+Models --> Context : подготовка запроса
+Models --> Selection : схема JSON / проверка ID
+Models --> StatusPolicy : история и ответ
+Context --> Selection : текстовый запрос отбора
+Context --> Servers : /apply-template и /tokenize
 legend bottom
-  Чаты и документы сохраняются в PostgreSQL. Индекс в RAM — только для текущего чата.
-  Коричневый блок — следующий этап, ещё не включён в запрос LLM.
+  Чаты и документы сохраняются в PostgreSQL. История запроса принадлежит исходному чату.
+  Переключение интерфейса не меняет данные выполняемой задачи. Вычисления последовательные.
   Ни UI, ни языковая модель не выполняют SQL.
+  Удаление чата каскадно очищает БД; общие изображения сохраняются.
 endlegend
 @enduml

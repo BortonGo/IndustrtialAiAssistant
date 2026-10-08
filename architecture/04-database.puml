@@ -1,6 +1,6 @@
 @startuml
 !include theme.iuml
-title PostgreSQL — реализованная схема первой версии
+title PostgreSQL — реализованная схема (миграции 001–003)
 hide circle
 skinparam linetype ortho
 entity chats {
@@ -17,6 +17,13 @@ entity messages {
  reply_to : uuid <<FK>>
  context_snapshot : text
  created_at : timestamptz
+}
+entity message_attachments {
+ * message_id : uuid <<PK, FK>>
+ * position : integer <<PK>>
+ file_name / source_path : text
+ document_id : uuid <<FK, nullable>>
+ preview_image : text
 }
 entity documents {
  * id : uuid <<PK>>
@@ -60,6 +67,8 @@ entity app_settings {
 }
 chats ||--o{ messages
 chats ||--o{ documents
+messages ||--o{ message_attachments
+documents |o--o{ message_attachments
 messages |o--o| messages
 documents ||--o{ document_blocks
 documents ||--o{ chunks
@@ -69,6 +78,7 @@ note bottom of messages
  Ответ связан с исходным вопросом.
  Ответ и вопрос принадлежат одному чату.
  UNIQUE(reply_to) исключает второй ответ на тот же запрос.
+ Ответ: complete или failed (сохранённый фрагмент при обрыве).
 end note
 note bottom of chunks
  Только полный индекс публикуется транзакционно.

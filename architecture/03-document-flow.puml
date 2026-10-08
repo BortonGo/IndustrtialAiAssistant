@@ -12,6 +12,7 @@ participant "StorageClient / Repository" as Storage
 database PostgreSQL as DB
 participant "Индекс в RAM" as Index
 User -> Service : загрузить файл в открытый чат
+Service -> Service : закрепить chatId и рабочий индекс задачи
 Service -> Docs : loadFile(path)
 Docs -> Extract : текст / таблицы / изображения
 Extract --> Docs : блоки, текст, предупреждения
@@ -35,10 +36,11 @@ Service -> Storage : load_chat(chatId)
 Storage -> DB : только документы и совместимые векторы этого чата
 DB --> Storage
 Storage --> Service : документы и готовые embeddings
-Service -> Docs : заменить список
-Service -> Index : заменить индекс
+Service -> Docs : заменить отображаемый список
+Service -> Index : заменить индекс выбранного чата
 note over Service,Index
  Перезапуск не требует повторного распознавания.
  При смене модели или версии обработки нужна переиндексация.
+ Переход доступен во время обработки; рабочие данные задачи не меняются.
 end note
 @enduml

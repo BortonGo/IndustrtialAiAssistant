@@ -5,6 +5,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QHash>
 
 #include <vector>
 
@@ -13,9 +14,10 @@ class DocumentManager final : public QObject {
 
     DocumentLoader documentLoader_;
     std::vector<Document> documents_;
+    QHash<QString, Document> previousVersions_;
 public:
     explicit DocumentManager(const DocumentExtractionConfig& config, QObject* parent = nullptr);
-    void loadFile(const QString& path);
+    void loadFile(const QString& path, bool refresh = false);
     void cancelLoading();
     const Document* findDocument(const QString& documentId) const;
 
@@ -23,6 +25,7 @@ public:
     const Document* documentAt(int row) const;
 
     bool setDocumentStatus(const QString& documentId, const DocumentStatus& status);
+    void finishIndexing(const QString& documentId, bool success);
     void restore(std::vector<Document> documents);
 
 signals:

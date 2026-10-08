@@ -5,6 +5,9 @@
 #include <QButtonGroup>
 #include <QSignalBlocker>
 #include <QItemSelectionModel>
+#include <QMenu>
+#include <QPainter>
+#include <QPersistentModelIndex>
 
 SidebarWidget::SidebarWidget(QAbstractItemModel* chatModel, QWidget* parent) : QWidget(parent) {
     this->setObjectName("sidebar");
@@ -58,7 +61,40 @@ SidebarWidget::SidebarWidget(QAbstractItemModel* chatModel, QWidget* parent) : Q
     btnShowChat_->setChecked(true);
 
     chatListView_ = new QListView(this);
+    chatListView_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(chatModel, &QAbstractItemModel::rowsAboutToBeRemoved, this, [this]() { changingRows_ = true; });
     chatListView_->setModel(chatModel);
+    connect(chatModel, &QAbstractItemModel::rowsRemoved, this, [this]() { changingRows_ = false; });
+    connect(chatListView_, &QWidget::customContextMenuRequested, this, [this](const QPoint& position) {
+        const QPersistentModelIndex index(chatListView_->indexAt(position));
+        if (!index.isValid()) return;
+        const auto id = index.data(ChatListModel::ChatIdRole).toString();
+        QMenu menu(this);
+        menu.setObjectName("chatContextMenu");
+        menu.setStyleSheet(
+            "QMenu { background: #272A31; border: 1px solid #414652; border-radius: 10px; padding: 6px; }"
+            "QMenu::item { color: #F49C9C; padding: 10px 18px 10px 32px; border-radius: 6px; }"
+            "QMenu::item:selected { background: #443036; color: #FFD0D0; }"
+            "QMenu::item:disabled { color: #9198A5; }"
+            "QMenu::icon { left: 10px; }");
+        QPixmap icon(20, 20); icon.fill(Qt::transparent);
+        {
+            QPainter painter(&icon); painter.setRenderHint(QPainter::Antialiasing);
+            painter.setPen(QPen(QColor("#F49C9C"), 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.drawLine(4, 6, 16, 6); painter.drawLine(8, 3, 12, 3);
+            painter.drawLine(8, 3, 7, 6); painter.drawLine(12, 3, 13, 6);
+            QPolygonF outline; outline << QPointF(5, 8) << QPointF(6, 17) << QPointF(14, 17) << QPointF(15, 8);
+            painter.drawPolyline(outline);
+            painter.drawLine(8, 9, 8, 14); painter.drawLine(12, 9, 12, 14);
+        }
+        auto* remove = menu.addAction(QIcon(icon), QStringLiteral("Удалить чат"));
+        remove->setEnabled(index.data(ChatListModel::CanDeleteRole).toBool());
+        menu.addAction(remove->isEnabled() ? QStringLiteral("Вместе с документами чата") :
+                       QStringLiteral("Дождитесь завершения операции"))->setEnabled(false);
+        if (menu.exec(chatListView_->viewport()->mapToGlobal(position)) == remove &&
+            index.isValid() && index.data(ChatListModel::CanDeleteRole).toBool())
+            emit deleteChatRequested(id);
+    });
     chatListView_->setStyleSheet(
         "QListView {"
         " background-color: transparent;"
@@ -99,7 +135,7 @@ SidebarWidget::SidebarWidget(QAbstractItemModel* chatModel, QWidget* parent) : Q
             &QItemSelectionModel::currentChanged,
             this, [this](const QModelIndex& current,
                          const QModelIndex&) {
-        if (!current.isValid()) {
+        if (!current.isValid() || changingRows_) {
             return;
         }
 

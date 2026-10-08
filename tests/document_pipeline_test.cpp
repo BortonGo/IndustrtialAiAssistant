@@ -1,6 +1,8 @@
 #include "io/document_extractor.hpp"
 #include "io/document_loader.hpp"
+#include "io/document_manager.hpp"
 #include "rag/document_chunker.h"
+#include "storage/storage_codec.hpp"
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QTimer>
@@ -112,8 +114,15 @@ int main(int argc, char** argv) {
         auto image = blocks[1].toObject(); image["pageNumber"] = 1.5;
         blocks[1] = image; bad = root; bad["blocks"] = blocks;
         check(!parseDocumentContent(QJsonDocument(bad).toJson(), document, error), "must reject fractional page");
+        auto stored = root;
+        stored["id"] = "stored"; stored["sourcePath"] = "source.pdf"; stored["status"] = "Ready";
+        check(documentFromJson(stored).status == DocumentStatus::Ready, "valid stored image rejected");
         file.remove();
         check(!parseDocumentContent(QJsonDocument(root).toJson(), document, error), "must reject missing image");
+        const auto unavailable = documentFromJson(stored);
+        check(unavailable.status == DocumentStatus::Error && !unavailable.warnings.isEmpty() &&
+              unavailable.text == root.value("text").toString() && unavailable.blocks.size() == 2,
+              "missing stored image must retain document and mark it unavailable");
         Document plain; plain.id = "plain"; plain.text = "abcdefghijklmnopqrst";
         check(DocumentChunker::chunkDocument(plain, 8, 2).size() == 3, "TXT chunk regression");
         Document paragraphs;
@@ -124,6 +133,36 @@ int main(int argc, char** argv) {
         auto combined = DocumentChunker::chunkDocument(paragraphs, 12, 2);
         check(combined.size() == 2 && combined[0].text == "first\nsecond", "short paragraphs should share chunks");
         check(combined[1].blockIndex == 1 && combined[1].startOffset == 10, "combined paragraph provenance");
+        DocumentExtractionConfig managerConfig;
+        DocumentManager manager(managerConfig);
+        QFile textFile(QDir(temp.path()).filePath("refresh.txt"));
+        auto writeText = [&](const QByteArray& bytes) {
+            check(textFile.open(QIODevice::WriteOnly), "cannot create refresh fixture");
+            textFile.write(bytes); textFile.close();
+        };
+        writeText("Original searchable document");
+        manager.loadFile(textFile.fileName());
+        check(manager.documentCount() == 1, "initial TXT load failed");
+        const auto documentId = manager.documentAt(0)->id;
+        manager.finishIndexing(documentId, true);
+        writeText("Replacement document");
+        manager.loadFile(textFile.fileName(), true);
+        manager.setDocumentStatus(documentId, DocumentStatus::Indexing);
+        manager.finishIndexing(documentId, false);
+        check(manager.documentAt(0)->text == "Original searchable document" && manager.documentAt(0)->status == DocumentStatus::Ready,
+              "failed refresh lost previous document text or ready status");
+        manager.loadFile(textFile.fileName(), true);
+        manager.finishIndexing(documentId, true);
+        check(manager.documentCount() == 1 && manager.documentAt(0)->id == documentId &&
+              manager.documentAt(0)->text == "Replacement document" && manager.documentAt(0)->status == DocumentStatus::Ready,
+              "successful refresh duplicated or failed to replace the document");
+        manager.loadFile(textFile.fileName(), true);
+        manager.finishIndexing(documentId, false);
+        check(manager.documentAt(0)->text == "Replacement document", "rollback returned an obsolete version");
+        DocumentManager firstAttempt(managerConfig);
+        firstAttempt.loadFile(textFile.fileName());
+        firstAttempt.finishIndexing(firstAttempt.documentAt(0)->id, false);
+        check(firstAttempt.documentAt(0)->status == DocumentStatus::Error, "failed first import looks ready");
         qInfo() << "JSON schema, chunk text, offsets, image provenance and TXT checks passed";
 
         // Optional integration check against the installed Python/Poppler and local model.

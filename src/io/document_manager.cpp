@@ -19,6 +19,8 @@ DocumentManager::DocumentManager(const DocumentExtractionConfig& config, QObject
             }
         }
         if (auto* previous = find(document.id)) {
+            if (previous->status == DocumentStatus::Ready || previous->status == DocumentStatus::ReadyWithWarnings)
+                previousVersions_.insert(document.id, *previous);
             *previous = document;
             emit documentStatusChanged(document.id);
             emit documentIndexingRequested(document.id);
@@ -37,13 +39,13 @@ DocumentManager::DocumentManager(const DocumentExtractionConfig& config, QObject
             this, &DocumentManager::progressChanged);
 }
 
-void DocumentManager::loadFile(const QString& path) {
+void DocumentManager::loadFile(const QString& path, bool refresh) {
     const Document* existing = nullptr;
     const auto source = QFileInfo(path).canonicalFilePath();
     for (const auto& document : documents_) {
         if (QString::compare(document.sourcePath, source, Qt::CaseInsensitive) == 0) { existing = &document; break; }
     }
-    if (existing && existing->status != DocumentStatus::Error && existing->status != DocumentStatus::ReadyWithWarnings) {
+    if (!refresh && existing && existing->status != DocumentStatus::Error && existing->status != DocumentStatus::ReadyWithWarnings) {
         emit errorOccurred(QStringLiteral("Документ уже загружен"));
         return;
     }
@@ -54,6 +56,7 @@ void DocumentManager::cancelLoading() { documentLoader_.cancel(); }
 
 void DocumentManager::restore(std::vector<Document> documents) {
     emit documentsAboutToReset();
+    previousVersions_.clear();
     documents_ = std::move(documents);
     emit documentsReset();
 }
@@ -89,6 +92,19 @@ bool DocumentManager::setDocumentStatus(const QString& documentId, const Documen
     d->status = status;
     emit documentStatusChanged(documentId);
     return true;
+}
+
+void DocumentManager::finishIndexing(const QString& documentId, bool success) {
+    auto* document = find(documentId);
+    if (!document) return;
+    if (!success && previousVersions_.contains(documentId)) {
+        *document = previousVersions_.take(documentId);
+    } else {
+        previousVersions_.remove(documentId);
+        document->status = success ? (document->warnings.isEmpty() ? DocumentStatus::Ready : DocumentStatus::ReadyWithWarnings)
+                                   : DocumentStatus::Error;
+    }
+    emit documentStatusChanged(documentId);
 }
 
 Document* DocumentManager::find(const QString& documentId) {

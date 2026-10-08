@@ -10,33 +10,92 @@ participant StorageClient as Client
 participant "Python Repository" as Repo
 database PostgreSQL as DB
 participant "Индекс текущего чата" as Index
+participant LMStudioLLMClient as ModelClient
+participant ContextBuilder as Context
 participant "llama-server" as LLM
 User -> Chat : sendMessage(text)
-Chat -> Client : save_question(id, chatId, text)
+Chat -> Client : save_question(id, chatId, text, attachments)
 Client -> Repo : JSON / stdio
 Repo -> DB : INSERT pending / COMMIT
 Repo --> Chat : результат через Client
 alt сохранено
- Chat -> Service : askQuestion(text, messageId)
- Service -> Index : поиск по embedding вопроса
+ Chat -> Service : askQuestion(text, messageId, chatId, attachmentPaths)
+ opt есть вложения сообщения
+  loop каждый прикреплённый файл
+   Service -> Service : прочитать и индексировать общим pipeline
+   Service -> Client : save_document; bind_attachment(questionId, position, documentId)
+   Client -> Repo
+   Repo -> DB : проверить chatId / путь; сохранить связь и фото
+   Repo --> Chat : карточки вложений через Service
+  end
+ end
+ Service -> Index : поиск по embedding; с вложениями — только их документы,
+ note right of Index
+  Без вложений: top-12 и фильтр имени файла.
+  С вложениями: до четырёх результатов на файл;
+  маленькие файлы и фото передаются целиком.
+ end note
  Index --> Service : фрагменты / изображения
+ Service -> Service : DocumentContext: таблицы и примечания целиком;\nполный небольшой названный документ
+ Service -> Client : question_history(questionId, chatId)
+ Client -> Repo
+ Repo -> DB : SELECT завершённые пары исходного чата
+ Repo --> Service : история через Client
+ Service -> ModelClient : вопрос + история + кандидаты + MCP
+ ModelClient -> ModelClient : разрешение CPU/RAM по вопросу;\nочистка старых вставок без запроса
+ ModelClient -> Context : текстовый запрос отбора (без пикселей)
+ Context -> LLM : /apply-template, /tokenize; подбор окна
+ LLM --> Context : шаблон / токены
+ Context --> ModelClient : проверенный запрос отбора
+ ModelClient -> LLM : /chat/completions: JSON Schema, до 512 токенов
+ LLM --> ModelClient : категория, ID источников/истории, нужен ли MCP
+ ModelClient -> ModelClient : проверить ID; исключить ненужные данные
+ note right of ModelClient
+  Вложения текущего сообщения обязательны;
+  категория conversation не убирает их из запроса.
+ end note
+ ModelClient -> Context : отобранные история / источники / MCP
+ loop базовый запрос, затем подбор истории
+  Context -> LLM : /apply-template, /tokenize
+  LLM --> Context : шаблон, текстовые токены
+  Context -> Context : резерв ответа/изображений; выбор полных пар
+ end
+ Context --> ModelClient : готовые messages / выбранный snapshot
+ ModelClient --> Service : snapshot и бюджет
  Service -> Client : save_context(messageId, snapshot)
  Client -> Repo
  Repo -> DB : UPDATE / COMMIT
  Repo --> Service : сохранено
- Service -> LLM : текущий вопрос + источники + MCP
- LLM --> Service : ответ / ошибка
+ Service -> ModelClient : generatePrepared()
+ ModelClient -> LLM : проверенные messages, max_tokens, stream=true
+ loop SSE до завершения
+  LLM --> ModelClient : delta.content
+  ModelClient -> ModelClient : собрать UTF-8 / JSON; проверить завершённые фразы
+  ModelClient --> Service : answerProgress(text)
+  Service --> Chat : answerProgress(questionId, text)
+  Chat --> User : обновить сообщение исходного чата
+ end
+ LLM --> ModelClient : finish_reason / DONE или ошибка
+ ModelClient -> ModelClient : исключить непрошеные показатели из ответа
+ ModelClient --> Service : результат
  Service --> Chat : результат
  Chat -> Client : finish_question(questionId, answerId, text)
  Client -> Repo
- Repo -> DB : ответ + complete вопроса / COMMIT
+ Repo -> DB : ответ + complete вопроса / COMMIT;
+ note right of Repo
+  При обрыве: уже показанный текст и вопрос
+  сохраняются как failed; в историю модели
+  такая пара не включается.
+ end note
  Repo --> Chat : результат через Client
  Chat --> User : ответ; при ошибке БД — «Не сохранено»
 else ошибка записи вопроса
  Chat --> User : «Не сохранено»; вопрос не отправляется модели
 end
 note over Chat,Service
- Переключение чата во время операции запрещено.
- Передача прошлой истории в LLM — следующий блок ContextBuilder.
+ Навигация доступна во время операции.
+ Кольцо ожидания принадлежит исходному чату и исчезает после записи результата.
+ Ответ и источники всегда сохраняются в исходный чат.
+ Если сам вопрос не помещается, ContextBuilder возвращает ошибку до генерации.
 end note
 @enduml

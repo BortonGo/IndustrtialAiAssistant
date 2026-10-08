@@ -17,6 +17,8 @@
 #include <QCloseEvent>
 #include <QTimer>
 #include <QApplication>
+#include <QMap>
+#include <memory>
 
 #include <QFileDialog>
 #include <QMessageBox>
@@ -49,7 +51,7 @@ MainWindow::MainWindow(QWidget *parent) :
 #endif
 
     resize(1200, 800);
-    setMinimumSize(800, 550);
+    setMinimumSize(1100, 680);
 
     ui->menuBar->hide();
     ui->mainToolBar->hide();
@@ -146,13 +148,16 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(serverStatus, &ServerStatusWidget::cancelDocumentRequested,
             service, &AssistantService::cancelDocument);
     auto updateControls = [service, chatManager, chatPage, documentsPage]() {
-        const bool ready = service->modelsReady();
+        const auto* chat = chatManager->currentChat();
+        const bool ready = service->modelsReady() && chat && service->isChatReady(chat->id);
         const bool idle = !service->isBusy() && !chatManager->isBusy();
         chatPage->setSendEnabled(ready && idle);
         chatPage->setUploadEnabled(ready && idle);
         documentsPage->setUploadEnabled(ready && idle);
+        chatPage->setWaitingForAnswer(chat && chatManager->isAwaitingAnswer(chat->id));
     };
     connect(chatManager, &ChatManager::operationChanged, this, updateControls);
+    connect(chatManager, &ChatManager::currentChatChanged, this, updateControls);
     connect(service, &AssistantService::modelsReadyChanged, this,
             [updateControls](bool) { updateControls(); });
     connect(service, &AssistantService::busyChanged, this,
@@ -194,47 +199,76 @@ MainWindow::MainWindow(QWidget *parent) :
             chatManager, [chatManager](const QString& id) {
         chatManager->selectChat(id);
     });
+    connect(sidebar, &SidebarWidget::deleteChatRequested, chatManager, &ChatManager::deleteChat);
 
     connect(chatPage, &ChatWidget::sendRequested,
             this, [chatPage, chatManager](const QString& text) {
-        if (chatManager->sendMessage(text)) {
+        if (chatManager->sendMessage(text, chatPage->attachmentPaths())) {
             chatPage->clearInput();
         }
     });
 
     // Refresh messages in chat.
-    auto refreshMessages = [chatManager, chatPage]() {
+    auto refreshMessages = [chatManager, chatPage](bool scrollToBottom) {
         const auto* chat = chatManager->currentChat();
         if (!chat) {
             chatPage->setMessages({});
+            chatPage->setContextText({});
             return;
         }
-        chatPage->setMessages(chat->messages);
+        chatPage->setMessages(chat->messages, scrollToBottom);
+        chatPage->setStreamingAnswer(chatManager->pendingAnswer(chat->id));
         QString sources;
         for (auto it = chat->messages.rbegin(); it != chat->messages.rend(); ++it) {
-            if (!it->contextSnapshot.isEmpty()) { sources = it->contextSnapshot; break; }
+            if (it->role == MessageRole::User) { sources = it->contextSnapshot; break; }
         }
         chatPage->setContextText(sources);
     };
 
+    auto drafts = std::make_shared<QMap<QString, QString>>();
+    auto attachmentDrafts = std::make_shared<QMap<QString, QStringList>>();
+    auto displayedChat = std::make_shared<QString>();
     connect(chatManager, &ChatManager::currentChatChanged,
-            this, [sidebar, pages, chatPage, refreshMessages]
-            (const QString& chatId) {
+            this, [sidebar, pages, chatPage, refreshMessages, drafts, attachmentDrafts, displayedChat](const QString& chatId) {
+        if (chatId != *displayedChat) {
+            if (!displayedChat->isEmpty()) {
+                (*drafts)[*displayedChat] = chatPage->inputText();
+                (*attachmentDrafts)[*displayedChat] = chatPage->attachmentPaths();
+            }
+            chatPage->setInputText(drafts->value(chatId));
+            chatPage->setAttachmentPaths(attachmentDrafts->value(chatId));
+            chatPage->showNotification(QString());
+            *displayedChat = chatId;
+        }
         sidebar->selectChat(chatId);
         pages->setCurrentWidget(chatPage);
-        refreshMessages();
+        refreshMessages(true);
     });
+    connect(chatManager, &ChatManager::chatRemoved, this,
+            [drafts, attachmentDrafts, displayedChat, chatPage, chatManager, sidebar](const QString& id) {
+        drafts->remove(id);
+        attachmentDrafts->remove(id);
+        if (*displayedChat == id) { displayedChat->clear(); chatPage->clearInput(); }
+        if (const auto* chat = chatManager->currentChat()) sidebar->selectChat(chat->id);
+    });
+    connect(chatManager, &ChatManager::notification, chatPage, &ChatWidget::showNotification);
 
     connect(chatManager, &ChatManager::messageAdded,
             this, [chatManager, refreshMessages](const QString& chatId, const QString& messageId) {
         const auto* chat = chatManager->currentChat();
         if (chat && chat->id == chatId) {
-            refreshMessages();
+            refreshMessages(false);
         }
     });
 
+    connect(chatManager, &ChatManager::answerProgress, this,
+            [chatManager, chatPage](const QString& chatId, const QString& text) {
+        const auto* chat = chatManager->currentChat();
+        if (chat && chat->id == chatId) chatPage->setStreamingAnswer(text);
+    });
+
     // Load document
-    auto openDocument = [this, service]() {
+    auto openDocument = [this, service, chatManager]() {
         const QString path = QFileDialog::getOpenFileName(
             this,
             tr("Выберите документ или изображение"),
@@ -242,22 +276,32 @@ MainWindow::MainWindow(QWidget *parent) :
             tr("Документы и изображения (*.txt *.pdf *.docx *.doc *.png *.jpg *.jpeg *.webp *.bmp);;"
                "Документы (*.txt *.pdf *.docx *.doc);;Изображения (*.png *.jpg *.jpeg *.webp *.bmp)"));
 
-        if (path.isEmpty()) {
+        if (path.isEmpty() || chatManager->isBusy()) {
             return;
         }
 
         service->loadDocument(path);
     };
 
-    connect(chatPage, &ChatWidget::documentUploadRequested,
-            this, openDocument);
+    connect(chatPage, &ChatWidget::documentUploadRequested, this, [this, chatPage]() {
+        const auto selected = QFileDialog::getOpenFileNames(this, QStringLiteral("Прикрепить к сообщению"), {},
+            QStringLiteral("Документы и изображения (*.txt *.pdf *.docx *.doc *.png *.jpg *.jpeg *.webp *.bmp)"));
+        auto paths = chatPage->attachmentPaths();
+        for (const auto& path : selected) if (!paths.contains(path, Qt::CaseInsensitive)) paths.append(path);
+        if (paths.size() > 4) {
+            chatPage->showNotification(QStringLiteral("К одному сообщению можно прикрепить до четырёх файлов.")); return;
+        }
+        chatPage->setAttachmentPaths(paths);
+    });
 
     connect(documentsPage, &DocumentsWidget::documentUploadRequested,
             this, openDocument);
 
     // Notifications
     connect(service, &AssistantService::documentLoaded,
-            this, [chatPage](const QString& fileName, int textLength) {
+            this, [chatPage, chatManager, service](const QString& fileName, int textLength) {
+        const auto* chat = chatManager->currentChat();
+        if (!chat || chat->id != service->operationChatId()) return;
         chatPage->showNotification(
             QString("Файл прочитан: %1 · %2 символов")
                 .arg(fileName)
@@ -274,24 +318,10 @@ MainWindow::MainWindow(QWidget *parent) :
 
     connect(chatManager, &ChatManager::errorOccurred,
             this, [this](const QString& message) {
-        QMessageBox::warning(this, "Couldn't send", message);
+        QMessageBox::warning(this, QStringLiteral("Local Assistant"), message);
     });
 
-    // Sources
-    connect(service, &AssistantService::retrievalReady,
-            this, [chatPage](const std::vector<VectorStore::SearchResult> &results) {
-        if (results.empty()) {
-            chatPage->setContextText("No fragments");
-            return;
-        }
-        QString ans;
-        for (const auto& r : results) {
-            ans += r.chunk.sourceDescription() +
-                    "\nSimilarity: " + QString::number(r.score) + "\n\n" + r.chunk.text + "\n\n";
-
-        }
-        chatPage->setContextText(ans);
-    });
+    // Sources are refreshed from the selected chat's saved message snapshot.
 
     // Computer info
     connect(service, &AssistantService::systemStatusReady,
