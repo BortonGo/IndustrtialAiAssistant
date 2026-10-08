@@ -2,6 +2,7 @@
 
 #include "documents/document.hpp"
 #include "idocument_reader.hpp"
+#include "document_extractor.hpp"
 
 #include <QObject>
 #include <QString>
@@ -11,16 +12,16 @@ class DocumentLoader : public QObject {
 
     qint64 maxFileSize_ = 0;
     IDocumentReader* txtReader_ = nullptr;
-    IDocumentReader* pdfReader_ = nullptr;
-    IDocumentReader* docxReader_ = nullptr;
+    IDocumentReader* structuredReader_ = nullptr;
 public:
-    explicit DocumentLoader(qint64 maxFileSize, const QString& pdfExtractorPath, const QString& docxPythonPath,
-                            const QString& docxScriptPath, QObject* parent = nullptr);
+    explicit DocumentLoader(const DocumentExtractionConfig& config, QObject* parent = nullptr);
 
     void loadFile(const QString& path);
+    void cancel();
 
 signals:
     void documentReady(const Document& document);
     void errorOccurred(const QString& message);
+    void progressChanged(const QString& message);
 };
 

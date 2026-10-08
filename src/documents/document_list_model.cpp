@@ -4,6 +4,8 @@
 
 DocumentListModel::DocumentListModel(DocumentManager* manager, QObject* parent)
     : QAbstractListModel(parent), manager_(manager) {
+    connect(manager_, &DocumentManager::documentsAboutToReset, this, [this]() { beginResetModel(); });
+    connect(manager_, &DocumentManager::documentsReset, this, [this]() { endResetModel(); });
 
     connect(manager_, &DocumentManager::documentAboutToBeAdded,
             this, [this](int row) {
@@ -51,7 +53,8 @@ QVariant DocumentListModel::data(const QModelIndex& index, int role) const {
     } else if (role == Qt::UserRole) {
         return document->id;
     } else if (role == Qt::ToolTipRole) {
-        return document->sourcePath;
+        return document->sourcePath + (document->warnings.isEmpty() ? QString() :
+                                      "\n" + document->warnings.join("\n"));
     }
     return {};
 }

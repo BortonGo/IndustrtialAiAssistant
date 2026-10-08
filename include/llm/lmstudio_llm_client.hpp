@@ -13,5 +13,5 @@ public:
     explicit LMStudioLLMClient(const ModelApiConfig& config, QObject* parent = nullptr);
 
     void generate(const QString& context,
-                          const QString& question) override;
+                          const QString& question, const QStringList& images = {}) override;
 };

@@ -34,6 +34,8 @@ set_target_properties(md4c PROPERTIES
 )
 
 add_executable(IndustrialAiAssistant src/main.cpp
+    include/storage/storage_client.hpp src/storage/storage_client.cpp
+    include/storage/storage_codec.hpp src/storage/storage_codec.cpp
     src/ui/mainwindow.ui
     src/application/mainwindow.cpp
     include/application/mainwindow.h
@@ -77,16 +79,13 @@ add_executable(IndustrialAiAssistant src/main.cpp
     resources/resources.qrc
     include/io/idocument_reader.hpp
     src/io/idocument_reader.cpp
-    include/io/pdf_text_extractor.hpp
-    src/io/pdf_text_extractor.cpp
     include/io/txt_document_reader.hpp
     src/io/txt_document_reader.cpp
-    include/io/pdf_document_reader.hpp
-    src/io/pdf_document_reader.cpp
-    include/io/docx_document_reader.hpp
-    src/io/docx_document_reader.cpp
-    include/io/docx_text_extractor.hpp
-    src/io/docx_text_extractor.cpp
+    include/io/document_extractor.hpp
+    src/io/document_extractor.cpp
+    src/io/document_content_parser.cpp
+    include/io/structured_document_reader.hpp
+    src/io/structured_document_reader.cpp
     include/ui/markdown_render.hpp
     src/ui/markdown_render.cpp
     include/llm/model_api_config.hpp
@@ -125,4 +124,29 @@ if(WIN32)
     target_include_directories(IndustrialAiAssistant PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/resources"
     )
+endif()
+
+option(LOCAL_ASSISTANT_BUILD_TESTS "Build document pipeline checks" OFF)
+if(LOCAL_ASSISTANT_BUILD_TESTS)
+    enable_testing()
+    add_executable(document_pipeline_test tests/document_pipeline_test.cpp
+        src/io/document_content_parser.cpp src/io/document_extractor.cpp
+        include/io/document_extractor.hpp src/rag/document_chunker.cpp
+        src/io/document_loader.cpp include/io/document_loader.hpp
+        src/io/structured_document_reader.cpp include/io/structured_document_reader.hpp
+        src/io/txt_document_reader.cpp include/io/txt_document_reader.hpp
+        src/io/idocument_reader.cpp include/io/idocument_reader.hpp)
+    target_include_directories(document_pipeline_test PRIVATE include include/io include/rag)
+    target_link_libraries(document_pipeline_test PRIVATE Qt5::Core)
+    add_test(NAME document_pipeline COMMAND document_pipeline_test)
+    # Built on demand because this test starts the actual configured model servers.
+    get_target_property(APP_TEST_SOURCES IndustrialAiAssistant SOURCES)
+    get_target_property(APP_TEST_INCLUDES IndustrialAiAssistant INCLUDE_DIRECTORIES)
+    list(REMOVE_ITEM APP_TEST_SOURCES src/main.cpp)
+    add_executable(service_pipeline_test EXCLUDE_FROM_ALL tests/service_pipeline_test.cpp ${APP_TEST_SOURCES})
+    target_include_directories(service_pipeline_test PRIVATE ${APP_TEST_INCLUDES})
+    target_link_libraries(service_pipeline_test PRIVATE Qt5::Widgets Qt5::Network md4c)
+    if(WIN32)
+        target_link_libraries(service_pipeline_test PRIVATE dwmapi)
+    endif()
 endif()

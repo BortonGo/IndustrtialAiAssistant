@@ -10,6 +10,7 @@ enum class DocumentStatus {
     Pending,
     Indexing,
     Ready,
+    ReadyWithWarnings,
     Error
 };
 
@@ -19,6 +20,7 @@ struct Document final {
     QString text;
     DocumentStatus status = DocumentStatus::Pending;
     std::vector<DocumentBlock> blocks;
+    QStringList warnings;
 
     static QString statusToQString(const DocumentStatus& status_) {
         switch (status_) {
@@ -28,6 +30,8 @@ struct Document final {
             return "Индексация";
         case DocumentStatus::Ready :
             return "Готов";
+        case DocumentStatus::ReadyWithWarnings :
+            return "Готов с предупреждениями";
         case DocumentStatus::Error :
         default:
             return "Ошибка";

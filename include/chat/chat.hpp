@@ -16,6 +16,9 @@ struct ChatMessage final {
     MessageRole role = MessageRole::User;
     QString text;
     QDateTime createdAt;
+    QString status = "complete";
+    QString error;
+    QString contextSnapshot;
 };
 
 struct Chat final {

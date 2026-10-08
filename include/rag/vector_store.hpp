@@ -27,6 +27,7 @@ namespace VectorStore {
         void removeDocument(const QString& documentId);
 
         void clear();
+        std::vector<Entry> documentEntries(const QString& documentId) const;
 
         bool empty() const;
     };

@@ -14,6 +14,8 @@ class ChatManager final : public QObject {
     std::vector<Chat> chats_;
     QString currentChatId_;
     QString pendingChatId_;
+    QString pendingMessageId_;
+    bool operation_ = true;
     AssistantService* service_ = nullptr;
 public:
     explicit ChatManager(AssistantService* service, QObject* parent = nullptr);
@@ -26,8 +28,12 @@ public:
 
     bool sendMessage(const QString& text);
     const Chat* currentChat() const;
+    bool isBusy() const { return operation_ || !pendingChatId_.isEmpty(); }
 
 signals:
+    void chatsAboutToReset();
+    void chatsReset();
+    void operationChanged();
     void chatCreated(const QString& chatId, const QString& title);
     void currentChatChanged(const QString& chatId);
 
@@ -42,6 +48,9 @@ signals:
 private:
     const Chat* findChat(const QString& chatId) const;
     Chat* findChat(const QString& chatId);
-    QString appendMessage(const QString& chatId, MessageRole role, const QString& text);
+    QString appendMessage(const QString& chatId, MessageRole role, const QString& text,
+                          const QString& id, const QString& status = "complete", const QString& error = {});
+    void restore();
+    void finish(const QString& answer, const QString& error);
 };
 

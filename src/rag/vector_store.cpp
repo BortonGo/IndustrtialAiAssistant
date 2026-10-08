@@ -93,6 +93,12 @@ namespace VectorStore {
         entries.clear();
     }
 
+    std::vector<Entry> InMemoryVectorStore::documentEntries(const QString& documentId) const {
+        std::vector<Entry> result;
+        for (const auto& entry : entries) if (entry.chunk.documentId == documentId) result.push_back(entry);
+        return result;
+    }
+
     bool InMemoryVectorStore::empty() const {
         return entries.empty();
     }

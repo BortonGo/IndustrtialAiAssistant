@@ -55,7 +55,7 @@ MessageComposer::MessageComposer(QWidget* parent) : QWidget(parent) {
     QPushButton *btnLoadDoc = new QPushButton("+");
     uploadButton_ = btnLoadDoc;
     btnLoadDoc->setFixedSize(44,44);
-    btnLoadDoc->setToolTip("Load document");
+    btnLoadDoc->setToolTip("Загрузить документ или изображение");
     btnLoadDoc->setStyleSheet(
                 "QPushButton {"
                 " background-color: #393C44;"

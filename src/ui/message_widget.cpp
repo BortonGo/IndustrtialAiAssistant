@@ -13,10 +13,15 @@ MessageWidget::MessageWidget(const ChatMessage& message, QWidget* parent) : QWid
     auto* bubble = new QLabel;
     if (isUser) {
         bubble->setTextFormat(Qt::PlainText);
-        bubble->setText(message.text);
+        QString text = message.text;
+        if (message.status == "pending") text += QStringLiteral("\n\nОжидание ответа…");
+        if (message.status == "failed") text += QStringLiteral("\n\nОшибка: ") + message.error;
+        if (message.status == "unsaved") text += QStringLiteral("\n\nНе сохранено: ") + message.error;
+        bubble->setText(text);
     } else {
         bubble->setTextFormat(Qt::RichText);
-        bubble->setText(markdownToHtml(message.text));
+        bubble->setText(markdownToHtml(message.text) + (message.status == "unsaved" ?
+                           QStringLiteral("<p><b>Не сохранено:</b> ") + message.error.toHtmlEscaped() + "</p>" : QString()));
     }
     bubble->setWordWrap(true);
     bubble->setTextInteractionFlags(Qt::TextSelectableByMouse);

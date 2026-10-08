@@ -133,18 +133,26 @@ MainWindow::MainWindow(QWidget *parent) :
             [serverStatus](const QString& name, const QString& text) {
         if (name == "Qwen") {
             serverStatus->setChatStatus(text);
+        } else if (name == "PostgreSQL") {
+            serverStatus->setStorageStatus(text);
         } else {
             serverStatus->setEmbeddingStatus(text);
         }
     });
     connect(service, &AssistantService::serverLogMessage,
             serverStatus, &ServerStatusWidget::appendLog);
-    auto updateControls = [service, chatPage, documentsPage]() {
+    connect(service, &AssistantService::documentProgress,
+            serverStatus, &ServerStatusWidget::setDocumentProgress);
+    connect(serverStatus, &ServerStatusWidget::cancelDocumentRequested,
+            service, &AssistantService::cancelDocument);
+    auto updateControls = [service, chatManager, chatPage, documentsPage]() {
         const bool ready = service->modelsReady();
-        chatPage->setSendEnabled(ready && !service->isBusy());
-        chatPage->setUploadEnabled(ready);
-        documentsPage->setUploadEnabled(ready);
+        const bool idle = !service->isBusy() && !chatManager->isBusy();
+        chatPage->setSendEnabled(ready && idle);
+        chatPage->setUploadEnabled(ready && idle);
+        documentsPage->setUploadEnabled(ready && idle);
     };
+    connect(chatManager, &ChatManager::operationChanged, this, updateControls);
     connect(service, &AssistantService::modelsReadyChanged, this,
             [updateControls](bool) { updateControls(); });
     connect(service, &AssistantService::busyChanged, this,
@@ -202,6 +210,11 @@ MainWindow::MainWindow(QWidget *parent) :
             return;
         }
         chatPage->setMessages(chat->messages);
+        QString sources;
+        for (auto it = chat->messages.rbegin(); it != chat->messages.rend(); ++it) {
+            if (!it->contextSnapshot.isEmpty()) { sources = it->contextSnapshot; break; }
+        }
+        chatPage->setContextText(sources);
     };
 
     connect(chatManager, &ChatManager::currentChatChanged,
@@ -224,9 +237,10 @@ MainWindow::MainWindow(QWidget *parent) :
     auto openDocument = [this, service]() {
         const QString path = QFileDialog::getOpenFileName(
             this,
-            tr("Select document"),
+            tr("Выберите документ или изображение"),
             QString(),
-            tr("Text documents (*.txt *.pdf *.docx)"));
+            tr("Документы и изображения (*.txt *.pdf *.docx *.doc *.png *.jpg *.jpeg *.webp *.bmp);;"
+               "Документы (*.txt *.pdf *.docx *.doc);;Изображения (*.png *.jpg *.jpeg *.webp *.bmp)"));
 
         if (path.isEmpty()) {
             return;
@@ -245,7 +259,7 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(service, &AssistantService::documentLoaded,
             this, [chatPage](const QString& fileName, int textLength) {
         chatPage->showNotification(
-            QString("Документ прочитан: %1 · %2 символов")
+            QString("Файл прочитан: %1 · %2 символов")
                 .arg(fileName)
                 .arg(textLength)
         );
@@ -272,7 +286,7 @@ MainWindow::MainWindow(QWidget *parent) :
         }
         QString ans;
         for (const auto& r : results) {
-            ans += "Источник: " + r.chunk.documentId + "\nПозиция: " + QString::number(r.chunk.startOffset) +
+            ans += r.chunk.sourceDescription() +
                     "\nSimilarity: " + QString::number(r.score) + "\n\n" + r.chunk.text + "\n\n";
 
         }

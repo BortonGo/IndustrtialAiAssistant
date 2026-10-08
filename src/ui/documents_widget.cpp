@@ -10,14 +10,14 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
     documentsLayout->setContentsMargins(16, 16, 16, 16);
     documentsLayout->setSpacing(16);
 
-    auto* documentsLabel = new QLabel("Документы · общие");
+    auto* documentsLabel = new QLabel("Документы и изображения текущего чата");
     documentsLabel->setStyleSheet(
         "color: #B8BCC6;"
         " font-size: 14px;"
         " padding: 6px;"
     );
     documentsLayout->addWidget(documentsLabel);
-    auto* btnAddDocument = new QPushButton("Добавить документ");
+    auto* btnAddDocument = new QPushButton("Добавить файл");
     uploadButton_ = btnAddDocument;
     documentsLayout->addWidget(btnAddDocument, 0, Qt::AlignLeft);
 

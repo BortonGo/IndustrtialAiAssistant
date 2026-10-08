@@ -32,6 +32,25 @@ ServerStatusWidget::ServerStatusWidget(QWidget* parent) : QWidget(parent)
     logButton->setCheckable(true);
     row->addWidget(logButton);
     layout->addLayout(row);
+    storageLabel_ = new QLabel(this);
+    storageLabel_->setTextFormat(Qt::PlainText);
+    storageLabel_->setWordWrap(true);
+    layout->addWidget(storageLabel_);
+    setStorageStatus(QStringLiteral("Ожидание запуска…"));
+    auto* documentRow = new QHBoxLayout;
+    documentLabel_ = new QLabel(this);
+    documentLabel_->setObjectName("documentProgress");
+    documentLabel_->setTextFormat(Qt::PlainText);
+    documentLabel_->setWordWrap(true);
+    documentLabel_->setStyleSheet("color: #B8BCC6; font-size: 13px;");
+    cancelButton_ = new QPushButton(QStringLiteral("Отмена"), this);
+    cancelButton_->setObjectName("cancelDocument");
+    documentRow->addWidget(documentLabel_, 1);
+    documentRow->addWidget(cancelButton_);
+    layout->addLayout(documentRow);
+    documentLabel_->hide();
+    cancelButton_->hide();
+    connect(cancelButton_, &QPushButton::clicked, this, &ServerStatusWidget::cancelDocumentRequested);
     log_ = new QPlainTextEdit(this);
     log_->setObjectName("serverLog");
     log_->setReadOnly(true);
@@ -45,6 +64,8 @@ ServerStatusWidget::ServerStatusWidget(QWidget* parent) : QWidget(parent)
     setChatStatus(QStringLiteral("Остановлен"));
     setEmbeddingStatus(QStringLiteral("Остановлен"));
 }
+
+void ServerStatusWidget::setStorageStatus(const QString& text) { setStatus(storageLabel_, QStringLiteral("БД"), text); }
 
 void ServerStatusWidget::setStatus(QLabel* label, const QString& name, const QString& text)
 {
@@ -70,4 +91,11 @@ void ServerStatusWidget::appendLog(const QString& server, const QString& text)
 {
     log_->appendPlainText(QStringLiteral("[%1] [%2] %3")
                              .arg(QDateTime::currentDateTime().toString("HH:mm:ss"), server, text));
+}
+
+void ServerStatusWidget::setDocumentProgress(const QString& text, bool canCancel)
+{
+    documentLabel_->setText(text);
+    documentLabel_->setVisible(!text.isEmpty());
+    cancelButton_->setVisible(canCancel);
 }

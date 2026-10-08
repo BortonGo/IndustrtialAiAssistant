@@ -75,7 +75,7 @@ ChatWidget::ChatWidget(QWidget* parent): QWidget(parent) {
     );
 
     auto* subtitle = new QLabel(
-        "Задайте вопрос или загрузите документы");
+        "Задайте вопрос или загрузите документ или изображение");
     subtitle->setAlignment(Qt::AlignCenter);
     subtitle->setWordWrap(true);
     subtitle->setStyleSheet(

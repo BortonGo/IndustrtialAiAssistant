@@ -5,6 +5,7 @@
 #include "embedding_client.hpp"
 #include "vector_store.hpp"
 #include "illm_client.hpp"
+#include "storage/storage_client.hpp"
 
 
 #include <QObject>
@@ -23,7 +24,10 @@ class AssistantService final : public QObject {
 
     enum class AssistantState {
         Idle,
+        Reading,
         Indexing,
+        Saving,
+        Restoring,
         Querying,
         Generating
     };
@@ -34,6 +38,9 @@ class AssistantService final : public QObject {
 
     ILLMClient* llmClient_ = nullptr;
     QString pendingQuestion_;
+    QString activeChatId_;
+    QString requestMessageId_;
+    StorageClient* storage_ = nullptr;
 
     EmbeddingClient* embeddingClient_ = nullptr;
     AssistantState state_ = AssistantState::Idle;
@@ -53,6 +60,10 @@ class AssistantService final : public QObject {
     QString runtimeBackend_;
     QString chatModelPath_;
     QString embeddingModelPath_;
+    QString projectorPath_;
+    QString chatGpuLayers_;
+    bool projectorOnGpu_ = true;
+    int chatContextSize_ = 8192;
     int chatPort_ = 8080;
     int embeddingPort_ = 8081;
     int startupTimeoutMs_ = 120000;
@@ -77,10 +88,15 @@ public:
     QString chatServerStatus() const;
     QString embeddingServerStatus() const;
     bool askQuestion(const QString &question);
+    bool askQuestion(const QString& question, const QString& messageId);
+    StorageClient* storage() const { return storage_; }
+    void activateChat(const QString& chatId, std::function<void(const QString&)> callback);
     void loadDocument(const QString& path);
+    void cancelDocument();
     DocumentManager* documentManager() const;
 
 signals:
+    void contextSaved(const QString& messageId, const QString& context);
     void answerReady(const QString &answer);
     void errorOccurred(const QString &message);
     void questionFailed(const QString& message);
@@ -92,12 +108,14 @@ signals:
     void serverLogMessage(const QString& server, const QString& text);
     void modelsReadyChanged(bool ready);
     void serversStopped();
+    void documentProgress(const QString& message, bool canCancel);
 
 private:
     QString buildSystemStatusContext() const;
     bool startDocumentIndexing(const QString& documentId);
     void tryStartNextDocument();
     void requestNextEmbeddingBatch();
+    void generateSavedContext(const QString& context, const QStringList& images = {});
     void launchServers(bool useCuda);
     void updateModelsReady();
     void updateServersStopped();

@@ -14,21 +14,26 @@ class DocumentManager final : public QObject {
     DocumentLoader documentLoader_;
     std::vector<Document> documents_;
 public:
-    explicit DocumentManager(qint64 maxFileSize, const QString& pdfExtractorPath, const QString& docxPythonPath,
-                             const QString& docxScriptPath, QObject* parent = nullptr);
+    explicit DocumentManager(const DocumentExtractionConfig& config, QObject* parent = nullptr);
     void loadFile(const QString& path);
+    void cancelLoading();
     const Document* findDocument(const QString& documentId) const;
 
     int documentCount() const;
     const Document* documentAt(int row) const;
 
     bool setDocumentStatus(const QString& documentId, const DocumentStatus& status);
+    void restore(std::vector<Document> documents);
 
 signals:
+    void documentsAboutToReset();
+    void documentsReset();
     void errorOccurred(const QString &message);
     void documentLoaded(const QString &documentId);
+    void documentIndexingRequested(const QString& documentId);
     void documentAboutToBeAdded(int row);
     void documentStatusChanged(const QString& documentId);
+    void progressChanged(const QString& message);
 
 private:
     Document* find(const QString& documentId);

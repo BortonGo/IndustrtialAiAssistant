@@ -2,6 +2,8 @@
 
 ChatListModel::ChatListModel(ChatManager* manager, QObject* parent)
     : QAbstractListModel(parent), manager_(manager) {
+    connect(manager_, &ChatManager::chatsAboutToReset, this, [this]() { beginResetModel(); });
+    connect(manager_, &ChatManager::chatsReset, this, [this]() { endResetModel(); });
 
     connect(manager_, &ChatManager::chatAboutToBeCreated,
             this, [this](int row) {
