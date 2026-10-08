@@ -54,7 +54,6 @@ __pycache__/
 *.pyo
 
 # diagrams ang local readme
-/architecture/README.md
 /architecture/rendered/
 
 /test-document.docx
@@ -62,4 +61,7 @@ __pycache__/
 
 # Local model runtime and weights
 /tools/llama-cpp/
+/tools/postgresql/
+/storage-data/
+/storage_tools/local.json
 *.gguf
