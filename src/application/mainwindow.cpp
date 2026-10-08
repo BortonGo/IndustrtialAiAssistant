@@ -8,6 +8,7 @@
 #include "chat_list_model.hpp"
 #include "documents/document_list_model.hpp"
 #include "server_status_widget.hpp"
+#include "ui_style.hpp"
 
 #include <QHBoxLayout>
 #include <QStatusBar>
@@ -17,6 +18,8 @@
 #include <QCloseEvent>
 #include <QTimer>
 #include <QApplication>
+#include <QLabel>
+#include <QPushButton>
 #include <QMap>
 #include <memory>
 
@@ -56,40 +59,8 @@ MainWindow::MainWindow(QWidget *parent) :
     ui->menuBar->hide();
     ui->mainToolBar->hide();
 
-    setStyleSheet(
-        "QMainWindow { background-color: #18191C; }"
-
-        "QStatusBar {"
-        " background-color: #18191C;"
-        " color: #A6ABB6;"
-        " border: none;"
-        "}"
-        "QStatusBar::item { border: none; }"
-
-        "QScrollBar:vertical {"
-        " background: #18191C;"
-        " width: 10px;"
-        " margin: 0px;"
-        "}"
-        "QScrollBar::handle:vertical {"
-        " background: #454953;"
-        " min-height: 30px;"
-        " border-radius: 5px;"
-        "}"
-        "QScrollBar::handle:vertical:hover {"
-        " background: #626875;"
-        "}"
-        "QScrollBar::add-line:vertical,"
-        "QScrollBar::sub-line:vertical {"
-        " height: 0px;"
-        "}"
-        "QScrollBar::add-page:vertical,"
-        "QScrollBar::sub-page:vertical {"
-        " background: none;"
-        "}"
-    );
-
-    statusBar()->setSizeGripEnabled(false);
+    setStyleSheet(UiStyle::applicationStyleSheet());
+    statusBar()->hide();
 
     // Other widgets
     auto* service = new AssistantService(this);
@@ -102,21 +73,33 @@ MainWindow::MainWindow(QWidget *parent) :
 
 
     centralWidget()->setObjectName("mainSurface");
-    centralWidget()->setStyleSheet(
-                "QWidget#mainSurface { background-color: #18191C; }"
-                );
-
-    auto* windowLayout = new QVBoxLayout(centralWidget());
-    windowLayout->setContentsMargins(12, 12, 12, 12);
-    windowLayout->setSpacing(8);
-    auto* serverStatus = new ServerStatusWidget;
-    windowLayout->addWidget(serverStatus);
-    auto* rootLayout = new QHBoxLayout;
-    windowLayout->addLayout(rootLayout, 1);
-    rootLayout->setContentsMargins(12, 12, 12, 12);
-    rootLayout->setSpacing(12);
+    auto* rootLayout = new QHBoxLayout(centralWidget());
+    rootLayout->setContentsMargins(0, 0, 0, 0); rootLayout->setSpacing(0);
 
     auto* sidebar = new SidebarWidget(chatListModel);
+    auto* serverStatus = new ServerStatusWidget;
+    sidebar->setStatusWidget(serverStatus);
+
+    auto* workspace = new QWidget;
+    workspace->setObjectName("workspace");
+    auto* workspaceLayout = new QVBoxLayout(workspace);
+    workspaceLayout->setContentsMargins(0, 0, 0, 0); workspaceLayout->setSpacing(0);
+    auto* progressBanner = new QWidget;
+    progressBanner->setObjectName("documentProgressBanner");
+    progressBanner->setAttribute(Qt::WA_StyledBackground, true);
+    progressBanner->setStyleSheet("QWidget#documentProgressBanner { background: #242527; border-bottom: 1px solid #363739; }");
+    auto* progressLayout = new QHBoxLayout(progressBanner);
+    progressLayout->setContentsMargins(22, 6, 18, 6);
+    auto* progressLabel = new QLabel;
+    progressLabel->setObjectName("documentProgress"); progressLabel->setTextFormat(Qt::PlainText);
+    progressLabel->setWordWrap(true); progressLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    progressLabel->setStyleSheet("color: #A5A6AA; font-size: 12px;");
+    auto* cancelDocument = new QPushButton(QStringLiteral("Отмена"));
+    cancelDocument->setObjectName("cancelDocument");
+    progressLayout->addWidget(progressLabel, 1); progressLayout->addWidget(cancelDocument);
+    progressBanner->hide(); workspaceLayout->addWidget(progressBanner);
+    auto* progressDismiss = new QTimer(this); progressDismiss->setSingleShot(true);
+    connect(progressDismiss, &QTimer::timeout, progressBanner, &QWidget::hide);
 
     auto* pages = new QStackedWidget;
     auto* chatPage = new ChatWidget;
@@ -127,7 +110,12 @@ MainWindow::MainWindow(QWidget *parent) :
     pages->addWidget(documentsPage);
 
     rootLayout->addWidget(sidebar);
-    rootLayout->addWidget(pages, 1);
+    workspaceLayout->addWidget(pages, 1);
+    rootLayout->addWidget(workspace, 1);
+    auto toggleSidebar = [sidebar]() { sidebar->setVisible(!sidebar->isVisible()); };
+    connect(sidebar, &SidebarWidget::collapseRequested, this, toggleSidebar);
+    connect(chatPage, &ChatWidget::sidebarToggleRequested, this, toggleSidebar);
+    connect(documentsPage, &DocumentsWidget::sidebarToggleRequested, this, toggleSidebar);
 
     serverStatus->setChatStatus(service->chatServerStatus());
     serverStatus->setEmbeddingStatus(service->embeddingServerStatus());
@@ -143,10 +131,14 @@ MainWindow::MainWindow(QWidget *parent) :
     });
     connect(service, &AssistantService::serverLogMessage,
             serverStatus, &ServerStatusWidget::appendLog);
-    connect(service, &AssistantService::documentProgress,
-            serverStatus, &ServerStatusWidget::setDocumentProgress);
-    connect(serverStatus, &ServerStatusWidget::cancelDocumentRequested,
-            service, &AssistantService::cancelDocument);
+    connect(service, &AssistantService::documentProgress, this,
+            [progressLabel, progressBanner, cancelDocument, progressDismiss](const QString& text, bool canCancel) {
+        progressDismiss->stop(); progressLabel->setText(text);
+        progressBanner->setVisible(!text.isEmpty()); cancelDocument->setVisible(canCancel);
+        if (!canCancel && (text == QStringLiteral("Документ сохранён и готов к поиску") ||
+                           text == QStringLiteral("Индексация отменена"))) progressDismiss->start(8000);
+    });
+    connect(cancelDocument, &QPushButton::clicked, service, &AssistantService::cancelDocument);
     auto updateControls = [service, chatManager, chatPage, documentsPage]() {
         const auto* chat = chatManager->currentChat();
         const bool ready = service->modelsReady() && chat && service->isChatReady(chat->id);
@@ -180,6 +172,12 @@ MainWindow::MainWindow(QWidget *parent) :
             this, [pages, documentsPage]() {
         pages->setCurrentWidget(documentsPage);
     });
+    connect(chatPage, &ChatWidget::documentsPageRequested, this, [pages, documentsPage]() {
+        pages->setCurrentWidget(documentsPage);
+    });
+    connect(documentsPage, &DocumentsWidget::chatPageRequested, this, [pages, chatPage]() {
+        pages->setCurrentWidget(chatPage);
+    });
 
     connect(pages, &QStackedWidget::currentChanged,
             sidebar, [sidebar, pages, chatPage](int) {
@@ -212,10 +210,12 @@ MainWindow::MainWindow(QWidget *parent) :
     auto refreshMessages = [chatManager, chatPage](bool scrollToBottom) {
         const auto* chat = chatManager->currentChat();
         if (!chat) {
+            chatPage->setChatTitle({});
             chatPage->setMessages({});
             chatPage->setContextText({});
             return;
         }
+        chatPage->setChatTitle(chat->title);
         chatPage->setMessages(chat->messages, scrollToBottom);
         chatPage->setStreamingAnswer(chatManager->pendingAnswer(chat->id));
         QString sources;
@@ -224,6 +224,10 @@ MainWindow::MainWindow(QWidget *parent) :
         }
         chatPage->setContextText(sources);
     };
+    connect(chatManager, &ChatManager::chatTitleChanged, this, [chatManager, chatPage](const QString& id) {
+        const auto* chat = chatManager->currentChat();
+        if (chat && chat->id == id) chatPage->setChatTitle(chat->title);
+    });
 
     auto drafts = std::make_shared<QMap<QString, QString>>();
     auto attachmentDrafts = std::make_shared<QMap<QString, QStringList>>();
@@ -324,11 +328,7 @@ MainWindow::MainWindow(QWidget *parent) :
     // Sources are refreshed from the selected chat's saved message snapshot.
 
     // Computer info
-    connect(service, &AssistantService::systemStatusReady,
-            this, [this](double cpuPercent, double memoryPercent) {
-       statusBar()->showMessage(QString("Usage: CPU = %1% | RAM = %2%")
-                                .arg(cpuPercent).arg(memoryPercent));
-    });
+    connect(service, &AssistantService::systemStatusReady, serverStatus, &ServerStatusWidget::setSystemUsage);
 
     // Diagnostic: chat created
     connect(chatManager, &ChatManager::chatCreated,

@@ -1,5 +1,6 @@
 #include "message_composer.hpp"
 #include "attachment_card.hpp"
+#include "ui_style.hpp"
 #include <QScrollArea>
 #include <QFileInfo>
 #include <QTimer>
@@ -12,6 +13,7 @@
 #include <QTextDocument>
 #include <QResizeEvent>
 #include <QtMath>
+#include <QLabel>
 
 namespace {
 // Keep the empty composer compact; scroll only after a few lines of text.
@@ -42,61 +44,67 @@ MessageComposer::MessageComposer(QWidget* parent) : QWidget(parent) {
     setAttribute(Qt::WA_StyledBackground, true);
     setStyleSheet(
         "QWidget#messageComposer {"
-        " background-color: #24262B;"
-        " border: 1px solid #393C44;"
+        " background-color: #28292B;"
+        " border: 1px solid #363739;"
         " border-radius: 18px;"
         "}"
     );
 
     textQuestion_ = new ComposerTextEdit;
 
-    textQuestion_->setPlaceholderText(QStringLiteral("Напишите вопрос или прикрепите файл…"));
+    textQuestion_->setPlaceholderText(QStringLiteral("Спросите что-нибудь или прикрепите файл…"));
     textQuestion_->setStyleSheet(
         "QTextEdit {"
         " background-color: transparent;"
-        " color: #E8E8ED;"
+        " color: #ECECEE;"
         " border: none;"
         " padding: 0px;"
-        " font-size: 16px;"
+        " font-size: 15px;"
         "}"
     );
 
-    QPushButton *btnAsk = new QPushButton("↑");
+    QPushButton *btnAsk = new QPushButton;
+    btnAsk->setObjectName("sendMessageButton");
+    btnAsk->setIcon(UiStyle::icon(UiStyle::Icon::Send, QColor("#191A1B")));
+    btnAsk->setIconSize(QSize(20, 20));
     sendButton_ = btnAsk;
-    btnAsk->setFixedSize(36,36);
-    btnAsk->setToolTip("Send question");
+    btnAsk->setFixedSize(32,32);
+    btnAsk->setToolTip(QStringLiteral("Отправить сообщение"));
+    btnAsk->setAccessibleName(btnAsk->toolTip());
     btnAsk->setStyleSheet(
                 "QPushButton {"
-                " background-color: #1E90FF;"
-                " color: #E8E8ED;"
+                " background-color: #ECECEE;"
+                " color: #191A1B;"
                 " border: none;"
-                " border-radius: 18px;"
+                " border-radius: 16px;"
                 " padding: 0px;"
-                " padding-bottom: 4px;"
                 " font-size: 24px;"
                 "}"
-                "QPushButton:hover { background-color: #46A3FF; }"
+                "QPushButton:hover { background-color: #CCD7E8; }"
                 "QPushButton:disabled {"
-                " background-color: #393C44;"
-                " color: #777B85;"
+                " background-color: #454649;"
+                " color: #84858A;"
                 "}"
                 );
 
-    QPushButton *btnLoadDoc = new QPushButton("+");
+    QPushButton *btnLoadDoc = new QPushButton;
+    btnLoadDoc->setObjectName("attachFileButton");
+    btnLoadDoc->setIcon(UiStyle::icon(UiStyle::Icon::Plus));
+    btnLoadDoc->setIconSize(QSize(20, 20));
     uploadButton_ = btnLoadDoc;
-    btnLoadDoc->setFixedSize(36,36);
+    btnLoadDoc->setFixedSize(32,32);
     btnLoadDoc->setToolTip("Прикрепить файл к сообщению");
+    btnLoadDoc->setAccessibleName(btnLoadDoc->toolTip());
     btnLoadDoc->setStyleSheet(
                 "QPushButton {"
-                " background-color: #393C44;"
-                " color: #E8E8ED;"
+                " background-color: transparent;"
+                " color: #A5A6AA;"
                 " border: none;"
-                " border-radius: 18px;"
+                " border-radius: 7px;"
                 " padding: 0px;"
-                " padding-bottom: 4px;"
                 " font-size: 24px;"
                 "}"
-                "QPushButton:hover { background-color: #494D57; }"
+                "QPushButton:hover { background-color: #363739; }"
                 );
 
     auto* layout = new QVBoxLayout(this);
@@ -108,6 +116,9 @@ MessageComposer::MessageComposer(QWidget* parent) : QWidget(parent) {
     buttonsLayout->setSpacing(8);
 
     buttonsLayout->addWidget(btnLoadDoc);
+    auto* modelLabel = new QLabel(QStringLiteral("Локальная модель"));
+    modelLabel->setStyleSheet("color: #A5A6AA; font-size: 11px;");
+    buttonsLayout->addWidget(modelLabel);
     buttonsLayout->addStretch();
     buttonsLayout->addWidget(btnAsk);
 
@@ -118,10 +129,10 @@ MessageComposer::MessageComposer(QWidget* parent) : QWidget(parent) {
     attachmentsArea_->setFixedHeight(100);
     attachmentsArea_->setStyleSheet("QScrollArea { border: none; background: transparent; }");
     attachmentsArea_->viewport()->setObjectName("attachmentViewport");
-    attachmentsArea_->viewport()->setStyleSheet("QWidget#attachmentViewport { background: #24262B; }");
+    attachmentsArea_->viewport()->setStyleSheet("QWidget#attachmentViewport { background: #28292B; }");
     auto* attachments = new QWidget;
     attachments->setObjectName("attachmentCanvas");
-    attachments->setStyleSheet("QWidget#attachmentCanvas { background: #24262B; }");
+    attachments->setStyleSheet("QWidget#attachmentCanvas { background: #28292B; }");
     attachmentsLayout_ = new QHBoxLayout(attachments);
     attachmentsLayout_->setContentsMargins(0, 0, 0, 0); attachmentsLayout_->setSpacing(8);
     attachmentsArea_->setWidget(attachments); attachmentsArea_->hide();
@@ -147,6 +158,7 @@ void MessageComposer::setAttachmentPaths(const QStringList& paths) {
     const auto revision = ++attachmentRevision_;
     attachmentPaths_ = paths;
     while (auto* item = attachmentsLayout_->takeAt(0)) { delete item->widget(); delete item; }
+    int cardHeight = 44;
     for (const auto& path : paths) {
         MessageAttachment attachment{QFileInfo(path).fileName(), path, {}, {}};
         auto* card = createAttachmentCard(attachment, attachmentsArea_, [this, path, revision]() {
@@ -156,9 +168,11 @@ void MessageComposer::setAttachmentPaths(const QStringList& paths) {
                 auto remaining = attachmentPaths_; remaining.removeAll(path); setAttachmentPaths(remaining);
             });
         });
+        cardHeight = qMax(cardHeight, card->height());
         attachmentsLayout_->addWidget(card);
     }
     attachmentsLayout_->addStretch();
+    attachmentsArea_->setFixedHeight(cardHeight + 16);
     attachmentsArea_->setVisible(!paths.isEmpty());
 }
 

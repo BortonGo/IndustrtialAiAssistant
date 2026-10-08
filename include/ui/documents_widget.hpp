@@ -14,6 +14,8 @@ public:
 
 signals:
     void documentUploadRequested();
+    void sidebarToggleRequested();
+    void chatPageRequested();
 private:
     QPushButton* uploadButton_ = nullptr;
 };

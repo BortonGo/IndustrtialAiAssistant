@@ -1,66 +1,81 @@
 #include "sidebar_widget.hpp"
 #include "chat_list_model.hpp"
+#include "ui_style.hpp"
 
 #include <QVBoxLayout>
-#include <QButtonGroup>
 #include <QSignalBlocker>
 #include <QItemSelectionModel>
 #include <QMenu>
 #include <QPainter>
 #include <QPersistentModelIndex>
+#include <QLabel>
+#include <QToolButton>
 
 SidebarWidget::SidebarWidget(QAbstractItemModel* chatModel, QWidget* parent) : QWidget(parent) {
     this->setObjectName("sidebar");
+    setAttribute(Qt::WA_StyledBackground, true);
     this->setStyleSheet(
         "QWidget#sidebar {"
-        " background-color: #202126;"
-        " border-radius: 16px;"
+        " background-color: #202122;"
+        " border-right: 1px solid #363739;"
         "}"
         "QPushButton {"
         " background-color: transparent;"
-        " color: #ECEEF2;"
+        " color: #ECECEE;"
         " border: 1px solid transparent;"
         " border-radius: 8px;"
-        " padding: 10px 12px;"
+        " padding: 8px 10px;"
         " text-align: left;"
-        " font-size: 15px;"
+        " font-size: 14px;"
         "}"
-        "QPushButton:hover { background-color: #2C2F36; }"
-        "QPushButton:pressed { background-color: #353944; }"
+        "QPushButton:hover { background-color: #2D2E30; }"
+        "QPushButton:pressed { background-color: #323437; }"
         "QPushButton:checked {"
-        " background-color: #293B59;"
-        " color: #DCEAFF;"
+        " background-color: #323437;"
+        " color: #ECECEE;"
         "}"
         "QPushButton:checked:hover {"
-        " background-color: #32496D;"
+        " background-color: #323437;"
         "}"
-        "QPushButton:focus { border-color: #3B82F6; }"
+        "QPushButton:focus { border-color: #CCD7E8; }"
     );
-    this->setFixedWidth(240);
+    this->setFixedWidth(226);
     auto* sidebarLayout = new QVBoxLayout(this);
-    sidebarLayout->setContentsMargins(12, 12, 12, 12);
-    sidebarLayout->setSpacing(8);
+    sidebarLayout_ = sidebarLayout;
+    sidebarLayout->setContentsMargins(12, 14, 12, 10);
+    sidebarLayout->setSpacing(4);
 
-    QPushButton *btnNewChat = new QPushButton("New chat");
-    btnNewChat->setToolTip("Create new chat");
-    btnNewChat->setMinimumHeight(44);
+    auto* brand = new QHBoxLayout;
+    brand->setContentsMargins(5, 0, 0, 0); brand->setSpacing(8);
+    auto* emblem = new QLabel;
+    emblem->setObjectName("sidebarEmblem");
+    emblem->setPixmap(QIcon(":/icons/logo-dark.svg").pixmap(22, 22));
+    emblem->setFixedSize(22, 22);
+    auto* name = new QLabel("Local Assistant");
+    name->setStyleSheet("font-size: 14px; font-weight: 600; color: #ECECEE;");
+    auto* collapse = new QToolButton;
+    collapse->setObjectName("collapseSidebar");
+    collapse->setIcon(UiStyle::icon(UiStyle::Icon::Sidebar));
+    collapse->setToolTip(QStringLiteral("Свернуть панель чатов"));
+    collapse->setAccessibleName(collapse->toolTip()); collapse->setFixedSize(28, 32);
+    brand->addWidget(emblem); brand->addWidget(name, 1); brand->addWidget(collapse);
+    sidebarLayout->addLayout(brand); sidebarLayout->addSpacing(18);
+    connect(collapse, &QToolButton::clicked, this, &SidebarWidget::collapseRequested);
 
-    btnShowChat_ = new QPushButton("Chat");
-    btnShowChat_->setMinimumHeight(44);
-    btnShowDocuments_ = new QPushButton("Documents");
-    btnShowDocuments_->setMinimumHeight(44);
+    QPushButton *btnNewChat = new QPushButton(QStringLiteral("Новый чат"));
+    btnNewChat->setObjectName("newChatButton");
+    btnNewChat->setIcon(UiStyle::icon(UiStyle::Icon::NewChat));
+    btnNewChat->setMinimumHeight(38);
 
-    btnShowChat_->setCheckable(true);
+    btnShowDocuments_ = new QPushButton(QStringLiteral("Документы чата"));
+    btnShowDocuments_->setIcon(UiStyle::icon(UiStyle::Icon::Documents));
+    btnShowDocuments_->setMinimumHeight(38);
     btnShowDocuments_->setCheckable(true);
 
-    auto* navigationGroup = new QButtonGroup(this);
-    navigationGroup->setExclusive(true);
-    navigationGroup->addButton(btnShowChat_);
-    navigationGroup->addButton(btnShowDocuments_);
-
-    btnShowChat_->setChecked(true);
-
     chatListView_ = new QListView(this);
+    chatListView_->setObjectName("chatList");
+    chatListView_->setTextElideMode(Qt::ElideRight);
+    chatListView_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     chatListView_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(chatModel, &QAbstractItemModel::rowsAboutToBeRemoved, this, [this]() { changingRows_ = true; });
     chatListView_->setModel(chatModel);
@@ -72,7 +87,7 @@ SidebarWidget::SidebarWidget(QAbstractItemModel* chatModel, QWidget* parent) : Q
         QMenu menu(this);
         menu.setObjectName("chatContextMenu");
         menu.setStyleSheet(
-            "QMenu { background: #272A31; border: 1px solid #414652; border-radius: 10px; padding: 6px; }"
+            "QMenu { background: #242527; border: 1px solid #363739; border-radius: 10px; padding: 6px; }"
             "QMenu::item { color: #F49C9C; padding: 10px 18px 10px 32px; border-radius: 6px; }"
             "QMenu::item:selected { background: #443036; color: #FFD0D0; }"
             "QMenu::item:disabled { color: #9198A5; }"
@@ -98,38 +113,41 @@ SidebarWidget::SidebarWidget(QAbstractItemModel* chatModel, QWidget* parent) : Q
     chatListView_->setStyleSheet(
         "QListView {"
         " background-color: transparent;"
-        " color: #E8E8ED;"
+        " color: #ECECEE;"
         " border: none;"
-        " font-size: 16px;"
+        " font-size: 14px;"
         " outline: none;"
         "}"
         "QListView::item {"
-        " padding: 12px;"
-        " margin-bottom: 4px;"
-        " border-radius: 10px;"
+        " padding: 8px 10px;"
+        " margin-bottom: 2px;"
+        " border-radius: 7px;"
         "}"
         "QListView::item:hover {"
-        " background-color: #24262B;"
+        " background-color: #2D2E30;"
         "}"
         "QListView::item:selected {"
-        " background-color: #353C50;"
-        " color: #FFFFFF;"
+        " background-color: #323437;"
+        " color: #ECECEE;"
         "}"
     );
 
     sidebarLayout->addWidget(btnNewChat);
-    sidebarLayout->addWidget(btnShowChat_);
     sidebarLayout->addWidget(btnShowDocuments_);
+    sidebarLayout->addSpacing(18);
+    auto* chatsLabel = new QLabel(QStringLiteral("Чаты"));
+    chatsLabel->setStyleSheet("color: #84858A; font-size: 12px; padding: 4px 10px;");
+    sidebarLayout->addWidget(chatsLabel);
     sidebarLayout->addWidget(chatListView_, 3);
 
     connect(btnNewChat, &QPushButton::clicked,
            this, &SidebarWidget::newChatRequested);
 
-    connect(btnShowChat_, &QPushButton::clicked,
-           this, &SidebarWidget::chatPageRequested);
-
     connect(btnShowDocuments_, &QPushButton::clicked,
-           this, &SidebarWidget::documentsPageRequested);
+           this, [this]() {
+        btnShowDocuments_->setChecked(true);
+        emit documentsPageRequested();
+    });
 
     connect(chatListView_->selectionModel(),
             &QItemSelectionModel::currentChanged,
@@ -149,8 +167,11 @@ SidebarWidget::SidebarWidget(QAbstractItemModel* chatModel, QWidget* parent) : Q
 }
 
 void SidebarWidget::setChatPageActive(bool active) {
-    btnShowChat_->setChecked(active);
     btnShowDocuments_->setChecked(!active);
+}
+
+void SidebarWidget::setStatusWidget(QWidget* widget) {
+    sidebarLayout_->addWidget(widget);
 }
 
 void SidebarWidget::selectChat(const QString& chatId) {

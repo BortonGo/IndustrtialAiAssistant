@@ -77,6 +77,7 @@ add_executable(IndustrialAiAssistant src/main.cpp
     include/ui/message_composer.hpp
     src/ui/message_composer.cpp
     include/ui/sidebar_widget.hpp
+    include/ui/ui_style.hpp
     src/ui/sidebar_widget.cpp
     include/ui/chat_widget.hpp
     src/ui/chat_widget.cpp

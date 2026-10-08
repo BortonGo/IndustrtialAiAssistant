@@ -1,4 +1,5 @@
 #include "attachment_card.hpp"
+#include "ui_style.hpp"
 #include <QFrame>
 #include <QLabel>
 #include <QToolButton>
@@ -18,25 +19,25 @@ QPixmap preview(const QString& path, const QSize& bounds) {
 }
 
 QWidget* createAttachmentCard(const MessageAttachment& attachment, QWidget* parent, std::function<void()> remove) {
-    auto* card = new QFrame(parent);
-    card->setObjectName("attachmentCard"); card->setFixedSize(176, 80);
-    card->setStyleSheet("QFrame#attachmentCard { background: #303746; border: 1px solid #46516A; border-radius: 10px; }"
-                       "QLabel { border: none; background: transparent; color: #E6EBF5; font-size: 12px; padding: 0px; }"
-                       "QToolButton { border: none; background: transparent; color: #B8C4D9; font-size: 16px; }"
-                       "QToolButton:hover { color: white; background: #46516A; border-radius: 5px; }");
-    card->setToolTip(attachment.fileName);
-    auto* row = new QHBoxLayout(card); row->setContentsMargins(8, 8, 6, 8); row->setSpacing(6);
     const auto extension = QFileInfo(attachment.sourcePath).suffix().toLower();
     const bool picture = QStringList{"png","jpg","jpeg","webp","bmp"}.contains(extension);
+    auto* card = new QFrame(parent);
+    card->setObjectName("attachmentCard"); card->setFixedSize(picture ? QSize(176, 80) : QSize(232, 44));
+    card->setStyleSheet("QFrame#attachmentCard { background: #242527; border: 1px solid #363739; border-radius: 10px; }"
+                       "QLabel { border: none; background: transparent; color: #ECECEE; font-size: 12px; padding: 0px; }"
+                       "QToolButton { border: none; background: transparent; color: #A5A6AA; font-size: 16px; padding: 0px; }"
+                       "QToolButton:hover { color: #ECECEE; background: #363739; border-radius: 5px; }");
+    card->setToolTip(attachment.fileName);
+    auto* row = new QHBoxLayout(card); row->setContentsMargins(8, 8, 6, 8); row->setSpacing(6);
     const auto imagePath = attachment.previewPath.isEmpty() ? attachment.sourcePath : attachment.previewPath;
     const auto thumbnail = picture ? preview(imagePath, QSize(52, 52)) : QPixmap();
-    auto* icon = new QToolButton(card); icon->setFixedSize(52, 56);
+    auto* icon = new QToolButton(card); icon->setFixedSize(picture ? QSize(52, 56) : QSize(24, 26));
     if (!thumbnail.isNull()) {
         icon->setIcon(QIcon(thumbnail)); icon->setIconSize(QSize(52, 52));
         icon->setToolTip(QStringLiteral("Открыть изображение"));
         QObject::connect(icon, &QToolButton::clicked, card, [card, imagePath, attachment]() {
             QDialog dialog(card); dialog.setWindowTitle(attachment.fileName);
-            dialog.setStyleSheet("QDialog { background: #18191C; } QLabel { color: #E6EBF5; }");
+            dialog.setStyleSheet("QDialog { background: #191A1B; } QLabel { color: #ECECEE; }");
             auto* layout = new QVBoxLayout(&dialog);
             auto* image = new QLabel(&dialog); image->setAlignment(Qt::AlignCenter);
             const auto pixels = preview(imagePath, QSize(900, 650));
@@ -47,15 +48,21 @@ QWidget* createAttachmentCard(const MessageAttachment& attachment, QWidget* pare
             layout->addWidget(close); dialog.exec();
         });
     } else {
-        icon->setText(extension.toUpper().left(4)); icon->setEnabled(false);
+        if (picture) icon->setText(extension.toUpper().left(4));
+        else { icon->setIcon(UiStyle::icon(UiStyle::Icon::Documents)); icon->setIconSize(QSize(18, 18)); }
+        icon->setEnabled(false);
     }
     row->addWidget(icon);
     auto* details = new QVBoxLayout; details->setSpacing(4);
-    auto* name = new QLabel; name->setTextFormat(Qt::PlainText); name->setWordWrap(true);
-    name->setText(name->fontMetrics().elidedText(attachment.fileName, Qt::ElideMiddle, remove ? 79 : 100));
+    auto* name = new QLabel; name->setTextFormat(Qt::PlainText); name->setWordWrap(picture);
+    QFont nameFont("Segoe UI"); nameFont.setPixelSize(12); name->setFont(nameFont);
+    const int nameWidth = picture ? (remove ? 79 : 100) : (remove ? 152 : 178);
+    name->setText(name->fontMetrics().elidedText(attachment.fileName, Qt::ElideMiddle, nameWidth));
     auto* type = new QLabel(picture ? QStringLiteral("Изображение") : QStringLiteral("Документ"));
-    type->setStyleSheet("color: #A4B1C9; font-size: 10px;");
-    details->addWidget(name); details->addWidget(type); row->addLayout(details, 1);
+    type->setStyleSheet("color: #A5A6AA; font-size: 11px;");
+    details->addWidget(name);
+    if (picture) details->addWidget(type); else delete type;
+    row->addLayout(details, 1);
     if (remove) {
         auto* close = new QToolButton(card); close->setText(QString::fromUtf8("×")); close->setFixedSize(18, 22);
         close->setToolTip(QStringLiteral("Убрать вложение"));

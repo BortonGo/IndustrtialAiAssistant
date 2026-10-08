@@ -1,20 +1,47 @@
 #include "chat_widget.hpp"
 #include "message_widget.hpp"
 #include "thinking_indicator.hpp"
+#include "ui_style.hpp"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QTimer>
+#include <QToolButton>
 
 ChatWidget::ChatWidget(QWidget* parent): QWidget(parent) {
-    auto* outerLayout = new QHBoxLayout(this);
-    outerLayout->setContentsMargins(16, 8, 16, 12);
+    auto* mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(0, 0, 0, 0); mainLayout->setSpacing(0);
+    auto* toolbar = new QWidget;
+    toolbar->setObjectName("workspaceHeader"); toolbar->setAttribute(Qt::WA_StyledBackground, true);
+    toolbar->setFixedHeight(58);
+    auto* header = new QHBoxLayout(toolbar);
+    header->setContentsMargins(18, 10, 18, 10); header->setSpacing(12);
+    auto* sidebarButton = new QToolButton;
+    sidebarButton->setObjectName("toggleSidebar");
+    sidebarButton->setIcon(UiStyle::icon(UiStyle::Icon::Sidebar)); sidebarButton->setFixedSize(32, 32);
+    sidebarButton->setToolTip(QStringLiteral("Показать или скрыть чаты"));
+    sidebarButton->setAccessibleName(sidebarButton->toolTip());
+    header->addWidget(sidebarButton);
+    chatTitle_ = new QLabel(QStringLiteral("Новый чат"));
+    chatTitle_->setObjectName("chatTitle"); chatTitle_->setTextFormat(Qt::PlainText);
+    chatTitle_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    chatTitle_->setStyleSheet("color: #ECECEE; font-size: 14px; font-weight: 600;");
+    header->addWidget(chatTitle_, 1);
+    mainLayout->addWidget(toolbar);
+    connect(sidebarButton, &QToolButton::clicked, this, &ChatWidget::sidebarToggleRequested);
+
+    auto* body = new QWidget;
+    auto* bodyLayout = new QHBoxLayout(body);
+    bodyLayout->setContentsMargins(0, 0, 0, 0); bodyLayout->setSpacing(0);
+    auto* conversationHolder = new QWidget;
+    auto* outerLayout = new QHBoxLayout(conversationHolder);
+    outerLayout->setContentsMargins(28, 0, 28, 16);
     outerLayout->setSpacing(0);
     auto* column = new QWidget;
     column->setObjectName("conversationColumn");
-    column->setMaximumWidth(1040);
+    column->setMaximumWidth(900);
     column->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     outerLayout->addStretch();
     outerLayout->addWidget(column, 1);
@@ -26,29 +53,24 @@ ChatWidget::ChatWidget(QWidget* parent): QWidget(parent) {
 
     auto* btnContext = new QPushButton("Источники");
     btnContext->setCheckable(true);
+    btnContext->setIcon(UiStyle::icon(UiStyle::Icon::Sources));
+    btnContext->setObjectName("toggleSources");
     btnContext->setStyleSheet(
         "QPushButton {"
-        " color: #A6ABB6;"
+        " color: #A5A6AA;"
         " background-color: transparent;"
-        " border: 1px solid #393C44;"
-        " border-radius: 8px;"
+        " border: none;"
+        " border-radius: 7px;"
         " padding: 6px 12px;"
         "}"
-        "QPushButton:hover { background-color: #2C2F36; }"
+        "QPushButton:hover { background-color: #2D2E30; }"
         "QPushButton:checked {"
-        " background-color: #293B59;"
-        " color: #DCEAFF;"
+        " background-color: #323437;"
+        " color: #ECECEE;"
         "}"
     );
 
-    auto* header = new QHBoxLayout;
-    header->setContentsMargins(0, 0, 0, 0);
-    header->setSpacing(12);
-    layout->addLayout(header);
-
-    auto *hlAnswers = new QHBoxLayout;
-    hlAnswers->setContentsMargins(0, 0, 0, 0);
-    hlAnswers->setSpacing(16);
+    header->addWidget(btnContext);
 
     messagesScroll_ = new QScrollArea;
     messagesScroll_->setWidgetResizable(true);
@@ -61,22 +83,22 @@ ChatWidget::ChatWidget(QWidget* parent): QWidget(parent) {
         if (!rebuilding_ && followTail_) scrollBar->setValue(maximum);
     });
     messagesScroll_->setStyleSheet(
-        "QScrollArea { background-color: #18191C; border: none; }"
+        "QScrollArea { background-color: #191A1B; border: none; }"
     );
     messagesScroll_->viewport()->setObjectName("messagesViewport");
     messagesScroll_->viewport()->setStyleSheet(
-        "QWidget#messagesViewport { background-color: #18191C; }"
+        "QWidget#messagesViewport { background-color: #191A1B; }"
     );
 
     auto* messagesContainer = new QWidget;
     messagesContainer->setObjectName("messagesContainer");
     messagesContainer->setStyleSheet(
-        "QWidget#messagesContainer { background-color: #18191C; }"
+        "QWidget#messagesContainer { background-color: #191A1B; }"
     );
 
     messagesLayout_ = new QVBoxLayout(messagesContainer);
-    messagesLayout_->setContentsMargins(0, 8, 8, 8);
-    messagesLayout_->setSpacing(16);
+    messagesLayout_->setContentsMargins(4, 26, 12, 12);
+    messagesLayout_->setSpacing(24);
     messagesLayout_->setAlignment(Qt::AlignTop);
     messagesLayout_->setSizeConstraint(QLayout::SetMinimumSize);
 
@@ -96,9 +118,9 @@ ChatWidget::ChatWidget(QWidget* parent): QWidget(parent) {
     title->setAlignment(Qt::AlignCenter);
     title->setWordWrap(true);
     title->setStyleSheet(
-        "color: #ECEEF2;"
-        "font-size: 28px;"
-        "font-weight: bold;"
+        "color: #ECECEE;"
+        "font-size: 26px;"
+        "font-weight: 500;"
     );
 
     auto* subtitle = new QLabel(
@@ -106,8 +128,8 @@ ChatWidget::ChatWidget(QWidget* parent): QWidget(parent) {
     subtitle->setAlignment(Qt::AlignCenter);
     subtitle->setWordWrap(true);
     subtitle->setStyleSheet(
-        "color: #A6ABB6;"
-        "font-size: 16px;"
+        "color: #A5A6AA;"
+        "font-size: 14px;"
     );
 
     welcomeLayout->addStretch();
@@ -119,18 +141,39 @@ ChatWidget::ChatWidget(QWidget* parent): QWidget(parent) {
     conversationPages_->addWidget(welcomePage_);
     conversationPages_->addWidget(messagesScroll_);
 
+    sourcesPanel_ = new QWidget;
+    sourcesPanel_->setObjectName("sourcesPanel");
+    sourcesPanel_->setAttribute(Qt::WA_StyledBackground, true);
+    sourcesPanel_->setFixedWidth(300);
+    sourcesPanel_->setStyleSheet("QWidget#sourcesPanel { background: #202122; border-left: 1px solid #363739; }");
+    auto* sourcesLayout = new QVBoxLayout(sourcesPanel_);
+    sourcesLayout->setContentsMargins(16, 14, 12, 14); sourcesLayout->setSpacing(12);
+    auto* sourcesHeading = new QHBoxLayout;
+    sourcesHeading->addWidget(new QLabel(QStringLiteral("Источники ответа")), 1);
+    auto* closeSources = new QToolButton;
+    closeSources->setIcon(UiStyle::icon(UiStyle::Icon::Close));
+    closeSources->setAccessibleName(QStringLiteral("Закрыть источники"));
+    sourcesHeading->addWidget(closeSources); sourcesLayout->addLayout(sourcesHeading);
+    connect(closeSources, &QToolButton::clicked, btnContext, [btnContext]() { btnContext->setChecked(false); });
+    auto* documents = new QPushButton(QStringLiteral("Документы чата"));
+    documents->setIcon(UiStyle::icon(UiStyle::Icon::Documents));
+    sourcesLayout->addWidget(documents, 0, Qt::AlignLeft);
+    connect(documents, &QPushButton::clicked, this, &ChatWidget::documentsPageRequested);
     textContext_ = new QTextEdit;
+    textContext_->setObjectName("sourceText");
     textContext_->setStyleSheet(
         "QTextEdit {"
-        " background-color: #24262B;"
-        " color: #E8E8ED;"
-        " border: 1px solid #393C44;"
-        " border-radius: 14px;"
-        " padding: 12px;"
-        " font-size: 18px;"
+        " background-color: #202122;"
+        " color: #A5A6AA;"
+        " border: none;"
+        " padding: 2px;"
+        " font-size: 13px;"
         "}"
     );
-    textContext_->hide();
+    textContext_->setReadOnly(true);
+    textContext_->setPlaceholderText(QStringLiteral("Источники появятся после вопроса по документам."));
+    sourcesLayout->addWidget(textContext_, 1);
+    sourcesPanel_->hide();
 
     notificationLabel_ = new QLabel;
     notificationLabel_->setTextFormat(Qt::PlainText);
@@ -138,25 +181,25 @@ ChatWidget::ChatWidget(QWidget* parent): QWidget(parent) {
     notificationLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     notificationLabel_->setStyleSheet(
         "QLabel {"
-        " color: #B8BCC6;"
-        " font-size: 14px;"
-        " padding: 6px;"
+        " color: #A5A6AA;"
+        " font-size: 12px;"
+        " padding: 8px 28px;"
         "}"
     );
     notificationLabel_->hide();
 
-    header->addWidget(notificationLabel_, 1);
-    header->addStretch();
-    header->addWidget(btnContext, 0, Qt::AlignTop);
-
-    textContext_->setReadOnly(true);
-    hlAnswers->addWidget(conversationPages_, 7);
-    hlAnswers->addWidget(textContext_, 3);
-
-    layout->addLayout(hlAnswers, 1);
+    mainLayout->addWidget(notificationLabel_);
+    layout->addWidget(conversationPages_, 1);
 
     composer_ = new MessageComposer;
     layout->addWidget(composer_);
+    auto* privacy = new QLabel(QStringLiteral("Файлы и переписка остаются на компьютере"));
+    privacy->setAlignment(Qt::AlignCenter);
+    privacy->setStyleSheet("color: #84858A; font-size: 11px;");
+    layout->addWidget(privacy);
+    bodyLayout->addWidget(conversationHolder, 1);
+    bodyLayout->addWidget(sourcesPanel_);
+    mainLayout->addWidget(body, 1);
 
     connect(composer_, &MessageComposer::sendRequested,
             this, &ChatWidget::sendRequested);
@@ -165,7 +208,7 @@ ChatWidget::ChatWidget(QWidget* parent): QWidget(parent) {
             this, &ChatWidget::documentUploadRequested);
 
     connect(btnContext, &QPushButton::toggled,
-            textContext_, &QWidget::setVisible);
+            sourcesPanel_, &QWidget::setVisible);
 
 }
 
@@ -231,6 +274,11 @@ void ChatWidget::setWaitingForAnswer(bool waiting) {
 
 void ChatWidget::setContextText(const QString& text) {
     textContext_->setPlainText(text);
+}
+
+void ChatWidget::setChatTitle(const QString& title) {
+    chatTitle_->setText(title.isEmpty() ? QStringLiteral("Новый чат") : title);
+    chatTitle_->setToolTip(chatTitle_->text());
 }
 
 void ChatWidget::showNotification(const QString& text) {

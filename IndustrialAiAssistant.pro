@@ -70,6 +70,7 @@ HEADERS += include/ui/documents_widget.hpp
 HEADERS += include/ui/message_composer.hpp
 HEADERS += include/ui/message_widget.hpp
 HEADERS += include/ui/sidebar_widget.hpp
+HEADERS += include/ui/ui_style.hpp
 
 FORMS += src/ui/mainwindow.ui
 RESOURCES += resources/resources.qrc

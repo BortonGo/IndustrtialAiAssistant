@@ -5,6 +5,9 @@
 #include "ui/chat_widget.hpp"
 #include "ui/sidebar_widget.hpp"
 #include "ui/thinking_indicator.hpp"
+#include "ui/server_status_widget.hpp"
+#include "ui/ui_style.hpp"
+#include "ui/documents_widget.hpp"
 #include <QApplication>
 #include <QDir>
 #include <QFile>
@@ -25,6 +28,7 @@
 #include <QToolButton>
 #include <QTextBrowser>
 #include <QPushButton>
+#include <QClipboard>
 #include <stdexcept>
 
 namespace {
@@ -68,11 +72,33 @@ int main(int argc, char** argv) {
         waitFor([&]() { return chats.currentChat() && service.isChatReady(chats.currentChat()->id); });
         QWidget window;
         window.setObjectName("preview");
-        window.setStyleSheet("QWidget#preview { background: #18191C; }");
+        window.setStyleSheet(UiStyle::applicationStyleSheet() + "QWidget#preview { background: #191A1B; }");
         auto* layout = new QHBoxLayout(&window);
+        layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(0);
         auto* sidebar = new SidebarWidget(&model);
         auto* page = new ChatWidget;
+        auto* services = new ServerStatusWidget;
+        sidebar->setStatusWidget(services);
+        services->setChatStatus(QStringLiteral("Готов · CUDA"));
+        services->setEmbeddingStatus(QStringLiteral("Готов · CUDA"));
+        DocumentsWidget documentsPage(&model);
+        bool backToChat = false, requestedDocuments = false;
+        QObject::connect(&documentsPage, &DocumentsWidget::chatPageRequested, [&]() { backToChat = true; });
+        QObject::connect(page, &ChatWidget::documentsPageRequested, [&]() { requestedDocuments = true; });
+        for (auto* button : documentsPage.findChildren<QPushButton*>())
+            if (button->text() == QStringLiteral("К переписке")) button->click();
+        require(backToChat, "Documents page has no return action");
+        page->findChild<QPushButton*>("toggleSources")->click();
+        for (auto* button : page->findChildren<QPushButton*>())
+            if (button->text() == QStringLiteral("Документы чата")) button->click();
+        require(requestedDocuments, "Sources panel cannot open documents");
+        page->findChild<QPushButton*>("toggleSources")->click();
+        services->setStorageStatus(QStringLiteral("Готова · PostgreSQL"));
+        services->appendLog("Qwen", QStringLiteral("Модель загружена"));
         layout->addWidget(sidebar); layout->addWidget(page, 1);
+        const auto toggleSidebar = [sidebar]() { sidebar->setVisible(!sidebar->isVisible()); };
+        QObject::connect(sidebar, &SidebarWidget::collapseRequested, toggleSidebar);
+        QObject::connect(page, &ChatWidget::sidebarToggleRequested, toggleSidebar);
         QObject::connect(sidebar, &SidebarWidget::chatSelected, &chats, &ChatManager::selectChat);
         QObject::connect(sidebar, &SidebarWidget::deleteChatRequested, &chats, &ChatManager::deleteChat);
         QObject::connect(&chats, &ChatManager::currentChatChanged, [&](const QString& id) {
@@ -83,6 +109,29 @@ int main(int argc, char** argv) {
             if (chats.currentChat()) sidebar->selectChat(chats.currentChat()->id);
         });
         window.resize(1100, 720); window.show();
+        const auto* emblem = sidebar->findChild<QLabel*>("sidebarEmblem");
+        require(emblem && emblem->pixmap() && !emblem->pixmap()->isNull(), "Original emblem missing from sidebar");
+        auto* summary = services->findChild<QPushButton*>("serverSummary");
+        auto* details = services->findChild<QWidget*>("serverDetails");
+        require(summary && details && !details->isVisible(), "Service details should start collapsed");
+        require(summary->text().contains(QStringLiteral("Модели готовы")), "Ready summary incorrect");
+        summary->click(); require(details->isVisible(), "Service details inaccessible");
+        services->findChild<QPushButton*>("toggleServerLog")->click();
+        require(services->findChild<QWidget*>("serverLog")->isVisible(), "Server log inaccessible");
+        details->grab().save("build-qtcreator/dialog-services-preview.png");
+        sidebar->findChild<QToolButton*>("collapseSidebar")->click();
+        require(!sidebar->isVisible() && !details->isVisible(), "Collapse left an orphan service popup");
+        page->findChild<QToolButton*>("toggleSidebar")->click();
+        require(sidebar->isVisible(), "Cannot restore sidebar");
+        for (auto* button : sidebar->findChildren<QPushButton*>()) {
+            if (button->text() != QStringLiteral("Документы чата")) continue;
+            button->click(); button->click();
+            require(button->isChecked(), "Clicking the active documents page cleared its selection");
+        }
+        sidebar->setChatPageActive(true);
+        services->setEmbeddingStatus(QStringLiteral("Ошибка: сервер недоступен"));
+        require(summary->text().contains(QStringLiteral("Ошибка")), "Collapsed summary hides service error");
+        services->setEmbeddingStatus(QStringLiteral("Готов · CUDA"));
         const auto a = chats.currentChat()->id;
         const auto b = chats.createChat();
         waitFor([&]() { return service.isChatReady(b) && !chats.isBusy(); });
@@ -170,12 +219,16 @@ int main(int argc, char** argv) {
         require(page->attachmentPaths() == QStringList{photo}, "Queued removal changed another chat's draft");
         page->clearInput();
 
+        waitFor([&]() { return page->findChild<QWidget*>("messageComposer")->height() <= 100; });
         const QString partial = QStringLiteral("**План проверки**\n\n1. Чтение документа.\n2. Поиск подходящих фрагментов.\n\n");
         page->setStreamingAnswer(partial);
         auto* streaming = page->findChild<QWidget*>("streamingAnswer");
         require(streaming, "Streaming bubble missing");
         page->setStreamingAnswer(partial + QStringLiteral("3. Формирование ответа.\n"));
         require(page->findChild<QWidget*>("streamingAnswer") == streaming, "Each update recreated the message widget");
+        auto* copy = streaming->findChild<QToolButton*>("copyAnswer");
+        require(copy, "Copy answer action missing");
+        copy->click(); require(QApplication::clipboard()->text().contains(QStringLiteral("Формирование ответа")), "Copy lost streamed text");
         QCoreApplication::processEvents();
         window.grab().save("build-qtcreator/chat-streaming-preview.png");
         page->setStreamingAnswer(partial.repeated(25));
@@ -206,6 +259,7 @@ int main(int argc, char** argv) {
         page->setMessages({user});
 
         // A long code line/table must scroll inside the answer, never the whole chat.
+        user.attachments = {{"protocol.docx", "protocol.docx", {}, {}}, {"manual.pdf", "manual.pdf", {}, {}}};
         ChatMessage wide; wide.role = MessageRole::Assistant;
         const QString codeLine = "    auto veryLongIdentifier = " + QString("value_").repeated(80) + ";";
         wide.text = "## Code\n\n```cpp\n" + codeLine + "\nreturn 0;\n```\n\n";

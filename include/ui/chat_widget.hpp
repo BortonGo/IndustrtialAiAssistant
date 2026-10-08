@@ -22,6 +22,8 @@ class ChatWidget : public QWidget {
     QVBoxLayout* messagesLayout_;
     QTextEdit* textContext_;
     QLabel* notificationLabel_;
+    QLabel* chatTitle_;
+    QWidget* sourcesPanel_;
     MessageComposer* composer_;
     QStackedWidget* conversationPages_;
     QWidget* welcomePage_;
@@ -39,6 +41,7 @@ public:
     void setStreamingAnswer(const QString& text);
     void setWaitingForAnswer(bool waiting);
     void setContextText(const QString& text);
+    void setChatTitle(const QString& title);
     void showNotification(const QString& text);
     void clearInput();
     QString inputText() const;
@@ -51,4 +54,6 @@ public:
 signals:
     void sendRequested(const QString& text);
     void documentUploadRequested();
+    void sidebarToggleRequested();
+    void documentsPageRequested();
 };
