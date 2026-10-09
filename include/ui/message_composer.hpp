@@ -9,6 +9,7 @@
 class QPushButton;
 class QScrollArea;
 class QHBoxLayout;
+class QImage;
 
 class MessageComposer : public QWidget {
     Q_OBJECT
@@ -20,6 +21,7 @@ class MessageComposer : public QWidget {
     QHBoxLayout* attachmentsLayout_ = nullptr;
     QStringList attachmentPaths_;
     quint64 attachmentRevision_ = 0;
+    void pasteImage(const QImage& image);
 public:
     explicit MessageComposer(QWidget* parent = nullptr);
     void clearInput();
@@ -29,9 +31,11 @@ public:
     void setUploadEnabled(bool enabled);
     QStringList attachmentPaths() const { return attachmentPaths_; }
     void setAttachmentPaths(const QStringList& paths);
+    void addAttachmentPaths(const QStringList& paths);
 
 signals:
     void sendRequested(const QString& text);
     void documentUploadRequested();
+    void attachmentError(const QString& message);
 };
 

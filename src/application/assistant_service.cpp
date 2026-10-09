@@ -53,6 +53,9 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
     chatKvCacheType_ = settings.value("models/chatKvCacheType", "f16").toString().trimmed().toLower();
     projectorOnGpu_ = settings.value("models/mmprojGpu", true).toBool();
     chatContextSize_ = qBound(4096, settings.value("models/chatContextSize", 8192).toInt(), 32768);
+    visionParallelRequests_ = qBound(1, settings.value("documents/visionParallelRequests", 2).toInt(), 2);
+    // Two image prompts and their descriptions must fit in the shared context pool.
+    if (chatContextSize_ < 8192 || !QFileInfo(projectorPath_).isFile()) visionParallelRequests_ = 1;
     maxAnswerTokens_ = qBound(128, settings.value("models/maxAnswerTokens", 4096).toInt(), chatContextSize_ / 2);
 
     storage_ = new StorageClient(runtimeRoot_, embeddingModelPath_, this);
@@ -68,6 +71,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
 
     // DocumentManager
     DocumentExtractionConfig documentConfig;
+    documentConfig.visionParallelRequests = visionParallelRequests_;
     documentConfig.pythonPath = root.filePath("document_tools/.venv/Scripts/python.exe");
     documentConfig.scriptPath = root.filePath("document_tools/read_document.py");
     documentConfig.popplerDirectory = root.filePath("tools/poppler-26.09.0/Library/bin");
@@ -774,9 +778,13 @@ void AssistantService::launchServers(bool useCuda)
     chatConfig.startupTimeoutMs = startupTimeoutMs_;
     chatConfig.arguments = QStringList() << "--model" << chatModelPath_ << "--alias" << "local-chat"
         << "--host" << "127.0.0.1" << "--port" << QString::number(chatPort_)
-        << "--ctx-size" << QString::number(chatContextSize_) << "--parallel" << "1"
+        << "--ctx-size" << QString::number(chatContextSize_) << "--parallel" << QString::number(visionParallelRequests_)
         << "--gpu-layers" << (useCuda ? chatGpuLayers_ : QString("0"))
         << "--jinja" << "--reasoning" << "off" << "--cache-ram" << "0";
+    if (visionParallelRequests_ > 1) {
+        // Share the existing KV allocation; a later chat request still has the full context window.
+        chatConfig.arguments << "--kv-unified" << "--kv-unified-per-slot" << QString::number(chatContextSize_);
+    }
     // Quantized V cache requires Flash Attention. Keep the CPU fallback at F16.
     const auto cacheType = useCuda && chatKvCacheType_ == "q8_0" ? QString("q8_0") : QString("f16");
     chatConfig.arguments << "--cache-type-k" << cacheType << "--cache-type-v" << cacheType;
@@ -786,6 +794,8 @@ void AssistantService::launchServers(bool useCuda)
     emit serverLogMessage("Qwen", QStringLiteral("Настройки памяти: слоёв на GPU %1, KV-кэш %2, окно %3; обработчик изображений: %4")
         .arg(useCuda ? chatGpuLayers_ : QString("0")).arg(cacheType).arg(chatContextSize_)
         .arg(useCuda && projectorOnGpu_ ? QString("GPU") : QString("CPU")));
+    emit serverLogMessage("Qwen", QStringLiteral("Распознавание изображений: запросов одновременно %1%2")
+        .arg(visionParallelRequests_).arg(visionParallelRequests_ > 1 ? QStringLiteral(" · общий KV-кэш") : QString()));
     if (QFileInfo(projectorPath_).isFile()) {
         chatConfig.arguments << "--mmproj" << projectorPath_ << "--image-max-tokens" << "1024";
         if (!useCuda || !projectorOnGpu_) chatConfig.arguments << "--no-mmproj-offload";

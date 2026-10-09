@@ -5,16 +5,21 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 from document_format import blocks_to_text
 from image_processing import ImageAnalyzer, describe_images
 import read_docx
 import read_pdf
 import read_image
 
+_progress_lock = threading.Lock()
+
 
 def progress(message):
-    print("@@DOCUMENT@@" + json.dumps({"message": message}, ensure_ascii=False),
-          file=sys.stderr, flush=True)
+    # A retry may report progress from either vision worker; preserve whole JSON lines.
+    with _progress_lock:
+        print("@@DOCUMENT@@" + json.dumps({"message": message}, ensure_ascii=False),
+              file=sys.stderr, flush=True)
 
 
 def convert_doc(path, directory, soffice=""):
@@ -59,8 +64,8 @@ def extract_document(args):
     else:
         raise ValueError("Поддерживаются PDF, DOC, DOCX и изображения PNG, JPG, JPEG, WEBP, BMP")
     analyzer = (ImageAnalyzer(args.vision_url, "local-chat", args.vision_profile,
-                              images / "descriptions") if args.vision_url else None)
-    describe_images(blocks, analyzer, warnings, progress)
+                              images / "descriptions", progress=progress) if args.vision_url else None)
+    describe_images(blocks, analyzer, warnings, progress, args.vision_parallel_requests)
     text = blocks_to_text(blocks)
     if not text.strip():
         raise ValueError("В документе нет доступного текста; изображения не распознаны. " +
@@ -78,6 +83,7 @@ if __name__ == "__main__":
     parser.add_argument("--poppler-dir", required=True, type=Path)
     parser.add_argument("--vision-url", default="")
     parser.add_argument("--vision-profile", default="")
+    parser.add_argument("--vision-parallel-requests", type=int, choices=(1, 2), default=1)
     parser.add_argument("--soffice", default="")
     args = parser.parse_args()
     try:

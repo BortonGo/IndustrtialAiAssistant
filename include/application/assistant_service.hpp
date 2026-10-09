@@ -75,6 +75,7 @@ class AssistantService final : public QObject {
     QString chatKvCacheType_;
     bool projectorOnGpu_ = true;
     int chatContextSize_ = 8192;
+    int visionParallelRequests_ = 2;
     int maxAnswerTokens_ = 4096;
     int chatPort_ = 8080;
     int embeddingPort_ = 8081;

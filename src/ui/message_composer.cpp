@@ -12,20 +12,55 @@
 #include <QAbstractTextDocumentLayout>
 #include <QTextDocument>
 #include <QResizeEvent>
+#include <QKeyEvent>
 #include <QtMath>
 #include <QLabel>
+#include <QMimeData>
+#include <QImage>
+#include <QPixmap>
+#include <QBuffer>
+#include <QCryptographicHash>
+#include <QDir>
+#include <QSaveFile>
+#include <QStandardPaths>
+#include <functional>
+#include <utility>
 
 namespace {
 // Keep the empty composer compact; scroll only after a few lines of text.
 class ComposerTextEdit : public QTextEdit {
+    std::function<void(const QImage&)> pasteImage_;
+    std::function<void()> submit_;
 public:
-    ComposerTextEdit() {
+    ComposerTextEdit(std::function<void(const QImage&)> pasteImage, std::function<void()> submit)
+        : pasteImage_(std::move(pasteImage)), submit_(std::move(submit)) {
         setAcceptRichText(false);
         setFixedHeight(32);
         connect(document()->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged,
                 this, [this](const QSizeF&) { updateHeight(); });
     }
 protected:
+    void keyPressEvent(QKeyEvent* event) override {
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+            && !(event->modifiers() & Qt::ShiftModifier)) {
+            if (!event->isAutoRepeat()) submit_();
+            event->accept();
+            return;
+        }
+        QTextEdit::keyPressEvent(event);
+    }
+    bool canInsertFromMimeData(const QMimeData* source) const override {
+        return source->hasImage() || QTextEdit::canInsertFromMimeData(source);
+    }
+    void insertFromMimeData(const QMimeData* source) override {
+        if (source->hasImage()) {
+            const auto data = source->imageData();
+            pasteImage_(data.userType() == QMetaType::QPixmap
+                        ? qvariant_cast<QPixmap>(data).toImage() : qvariant_cast<QImage>(data));
+            return;
+        }
+        QTextEdit::insertFromMimeData(source);
+    }
     void resizeEvent(QResizeEvent* event) override {
         QTextEdit::resizeEvent(event);
         updateHeight();
@@ -50,7 +85,10 @@ MessageComposer::MessageComposer(QWidget* parent) : QWidget(parent) {
         "}"
     );
 
-    textQuestion_ = new ComposerTextEdit;
+    textQuestion_ = new ComposerTextEdit([this](const QImage& image) { pasteImage(image); },
+                                       [this]() { sendButton_->click(); });
+    textQuestion_->setObjectName("messageInput");
+    textQuestion_->setToolTip(QStringLiteral("Enter — отправить · Shift+Enter — новая строка\nCtrl+V — вставить текст или скриншот"));
 
     textQuestion_->setPlaceholderText(QStringLiteral("Спросите что-нибудь или прикрепите файл…"));
     textQuestion_->setStyleSheet(
@@ -69,7 +107,7 @@ MessageComposer::MessageComposer(QWidget* parent) : QWidget(parent) {
     btnAsk->setIconSize(QSize(20, 20));
     sendButton_ = btnAsk;
     btnAsk->setFixedSize(32,32);
-    btnAsk->setToolTip(QStringLiteral("Отправить сообщение"));
+    btnAsk->setToolTip(QStringLiteral("Отправить сообщение (Enter)"));
     btnAsk->setAccessibleName(btnAsk->toolTip());
     btnAsk->setStyleSheet(
                 "QPushButton {"
@@ -152,6 +190,53 @@ MessageComposer::MessageComposer(QWidget* parent) : QWidget(parent) {
 void MessageComposer::clearInput() {
     textQuestion_->clear();
     setAttachmentPaths({});
+}
+
+void MessageComposer::addAttachmentPaths(const QStringList& paths) {
+    auto combined = attachmentPaths_;
+    for (const auto& path : paths)
+        if (!combined.contains(path, Qt::CaseInsensitive)) combined.append(path);
+    if (combined.size() > 4) {
+        emit attachmentError(QStringLiteral("К одному сообщению можно прикрепить до четырёх файлов."));
+        return;
+    }
+    setAttachmentPaths(combined);
+}
+
+void MessageComposer::pasteImage(const QImage& image) {
+    if (!uploadButton_->isEnabled()) {
+        emit attachmentError(QStringLiteral("Прикрепление изображений пока недоступно. Дождитесь завершения текущей операции и готовности сервисов."));
+        return;
+    }
+    if (attachmentPaths_.size() >= 4) {
+        emit attachmentError(QStringLiteral("К одному сообщению можно прикрепить до четырёх файлов."));
+        return;
+    }
+    QByteArray png;
+    QBuffer buffer(&png);
+    // QPixmap may drop the alpha channel of an opaque screenshot. Normalize before hashing.
+    if (image.isNull() || !buffer.open(QIODevice::WriteOnly)
+        || !image.convertToFormat(QImage::Format_ARGB32).save(&buffer, "PNG")) {
+        emit attachmentError(QStringLiteral("Не удалось прочитать изображение из буфера обмена."));
+        return;
+    }
+    const auto cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    const auto directory = QDir(cache).filePath("clipboard-images");
+    if (cache.isEmpty() || !QDir().mkpath(directory)) {
+        emit attachmentError(QStringLiteral("Не удалось создать папку для скриншотов."));
+        return;
+    }
+    // Keep the source beyond draft changes and asynchronous indexing. Identical pastes reuse it.
+    const auto hash = QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex();
+    const auto path = QDir(directory).filePath("screenshot-" + QString::fromLatin1(hash) + ".png");
+    if (!QFileInfo::exists(path)) {
+        QSaveFile file(path);
+        if (!file.open(QIODevice::WriteOnly) || file.write(png) != png.size() || !file.commit()) {
+            emit attachmentError(QStringLiteral("Не удалось сохранить скриншот: %1").arg(file.errorString()));
+            return;
+        }
+    }
+    addAttachmentPaths({path});
 }
 
 void MessageComposer::setAttachmentPaths(const QStringList& paths) {

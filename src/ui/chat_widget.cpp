@@ -206,6 +206,8 @@ ChatWidget::ChatWidget(QWidget* parent): QWidget(parent) {
 
     connect(composer_, &MessageComposer::documentUploadRequested,
             this, &ChatWidget::documentUploadRequested);
+    connect(composer_, &MessageComposer::attachmentError,
+            this, &ChatWidget::showNotification);
 
     connect(btnContext, &QPushButton::toggled,
             sourcesPanel_, &QWidget::setVisible);
@@ -296,3 +298,4 @@ void ChatWidget::setInputText(const QString& text) { composer_->setInputText(tex
 void ChatWidget::setUploadEnabled(bool enabled) { composer_->setUploadEnabled(enabled); }
 QStringList ChatWidget::attachmentPaths() const { return composer_->attachmentPaths(); }
 void ChatWidget::setAttachmentPaths(const QStringList& paths) { composer_->setAttachmentPaths(paths); }
+void ChatWidget::addAttachmentPaths(const QStringList& paths) { composer_->addAttachmentPaths(paths); }

@@ -290,12 +290,7 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(chatPage, &ChatWidget::documentUploadRequested, this, [this, chatPage]() {
         const auto selected = QFileDialog::getOpenFileNames(this, QStringLiteral("Прикрепить к сообщению"), {},
             QStringLiteral("Документы и изображения (*.txt *.pdf *.docx *.doc *.png *.jpg *.jpeg *.webp *.bmp)"));
-        auto paths = chatPage->attachmentPaths();
-        for (const auto& path : selected) if (!paths.contains(path, Qt::CaseInsensitive)) paths.append(path);
-        if (paths.size() > 4) {
-            chatPage->showNotification(QStringLiteral("К одному сообщению можно прикрепить до четырёх файлов.")); return;
-        }
-        chatPage->setAttachmentPaths(paths);
+        chatPage->addAttachmentPaths(selected);
     });
 
     connect(documentsPage, &DocumentsWidget::documentUploadRequested,

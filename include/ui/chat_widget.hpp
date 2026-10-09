@@ -50,6 +50,7 @@ public:
     void setUploadEnabled(bool enabled);
     QStringList attachmentPaths() const;
     void setAttachmentPaths(const QStringList& paths);
+    void addAttachmentPaths(const QStringList& paths);
 
 signals:
     void sendRequested(const QString& text);

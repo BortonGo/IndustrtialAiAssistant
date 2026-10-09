@@ -6,7 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -21,6 +21,18 @@ import read_pdf
 import read_document
 from document_format import blocks_to_text
 from image_processing import ImageAnalyzer, describe_images, save_normalized_image
+
+
+def send_vision_stream(handler, text):
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/event-stream")
+    handler.end_headers()
+    event = {"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]}
+    data = ("data: " + json.dumps(event, ensure_ascii=False) + "\n\ndata: [DONE]\n\n").encode("utf-8")
+    # Fragment inside JSON and Cyrillic UTF-8 code points as well as SSE delimiters.
+    for start in range(0, len(data), 7):
+        handler.wfile.write(data[start:start + 7])
+        handler.wfile.flush()
 
 
 def make_picture(path):
@@ -142,9 +154,7 @@ class ExtractionTests(unittest.TestCase):
             def do_POST(self):
                 payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 requests.append(payload)
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(json.dumps({"choices": [{"message": {"content": "PUMP-417, 7.5 bar"}, "finish_reason": "stop"}]}).encode())
+                send_vision_stream(self, "Насос PUMP-417, 7.5 bar")
             def log_message(self, *args):
                 pass
         server = HTTPServer(("127.0.0.1", 0), Handler)
@@ -152,8 +162,8 @@ class ExtractionTests(unittest.TestCase):
         thread.start()
         try:
             analyzer = ImageAnalyzer(f"http://127.0.0.1:{server.server_port}/v1/chat/completions", "local-chat", "fixture", self.work / "cache")
-            self.assertEqual(analyzer.describe(path), ("PUMP-417, 7.5 bar", False))
-            self.assertEqual(analyzer.describe(path), ("PUMP-417, 7.5 bar", False))
+            self.assertEqual(analyzer.describe(path), ("Насос PUMP-417, 7.5 bar", False))
+            self.assertEqual(analyzer.describe(path), ("Насос PUMP-417, 7.5 bar", False))
             self.assertEqual(len(requests), 1)
             encoded = requests[0]["messages"][0]["content"][1]["image_url"]["url"].split(",")[1]
             self.assertEqual(base64.b64decode(encoded), Path(path).read_bytes())
@@ -191,7 +201,7 @@ class ExtractionTests(unittest.TestCase):
         return SimpleNamespace(path=path, images_dir=self.images,
                                poppler_dir=self.work / "no-poppler-required",
                                soffice="", vision_url="http://127.0.0.1/unused",
-                               vision_profile="fixture")
+                               vision_profile="fixture", vision_parallel_requests=1)
 
     def test_standalone_photos_supported_formats_and_exif(self):
         with patch("read_document.ImageAnalyzer") as factory, patch("read_document.progress"):
@@ -248,6 +258,135 @@ class ExtractionTests(unittest.TestCase):
             factory.return_value.describe.side_effect = None
             factory.return_value.describe.return_value = ("PUMP-417", False)
             self.assertIn("PUMP-417", read_document.extract_document(args)["text"])
+
+
+class ParallelImageTests(unittest.TestCase):
+    def setUp(self):
+        (ROOT / "build-document-check").mkdir(exist_ok=True)
+
+    def test_parallel_workers_deduplicate_preserve_order_and_keep_partial_success(self):
+        lock = threading.Lock()
+        both_started = threading.Barrier(2, timeout=3)
+        second_finished = threading.Event()
+        calls, active, peak = [], 0, 0
+
+        def describe(path):
+            nonlocal active, peak
+            with lock:
+                calls.append(path)
+                active += 1
+                peak = max(peak, active)
+            try:
+                if path in ("a", "b"):
+                    both_started.wait()
+                    if path == "a":
+                        if not second_finished.wait(3):
+                            raise RuntimeError("Second worker did not finish")
+                    else:
+                        second_finished.set()
+                if path == "bad":
+                    raise ValueError("broken image")
+                return "description " + path, path == "c"
+            finally:
+                with lock:
+                    active -= 1
+
+        blocks = [{"type": "image", "imagePath": path, "pageNumber": i}
+                  for i, path in enumerate(("a", "b", "a", "c", "bad", "d", "bad"), 1)]
+        blocks.insert(2, {"type": "text", "text": "Unchanged paragraph"})
+        warnings, progress = [], []
+        describe_images(blocks, SimpleNamespace(describe=describe), warnings, progress.append, 2)
+        self.assertEqual(peak, 2)
+        self.assertCountEqual(calls, ["a", "b", "c", "bad", "d"])
+        self.assertEqual([b["text"] for b in blocks], ["description a", "description b", "Unchanged paragraph",
+                         "description a", "description c", "", "description d", ""])
+        self.assertEqual(len(warnings), 3)
+        self.assertIn("страница 4: описание прервано", warnings[0])
+        self.assertIn("страница 5", warnings[1])
+        self.assertIn("страница 7", warnings[2])
+        self.assertIn("7/7", progress[-1])
+
+    def test_server_failure_stops_new_requests_but_keeps_inflight_success(self):
+        from urllib.error import URLError
+        both_started = threading.Barrier(2, timeout=3)
+        release_second = threading.Event()
+        calls = []
+
+        def describe(path):
+            calls.append(path)
+            both_started.wait()
+            if path == "a":
+                raise URLError("server disconnected")
+            if not release_second.wait(3):
+                raise RuntimeError("Progress was not reported for failed image")
+            return "Saved result", False
+
+        blocks = [{"type": "image", "imagePath": p} for p in ("a", "b", "c", "d")]
+        warnings = []
+        describe_images(blocks, SimpleNamespace(describe=describe), warnings,
+                        lambda text: release_second.set() if "1/4" in text else None, 2)
+        self.assertCountEqual(calls, ["a", "b"])
+        self.assertEqual([b["text"] for b in blocks], ["", "Saved result", "", ""])
+        self.assertEqual(len(warnings), 3)
+        self.assertIn("после предыдущей ошибки", warnings[-1])
+
+    def test_parallel_http_requests_can_write_the_same_cache_key(self):
+        # Different paths with identical pixels can race on the persistent cache file.
+        barrier = threading.Barrier(2, timeout=3)
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                barrier.wait()
+                send_vision_stream(self, "PUMP-417")
+
+            def log_message(self, *args):
+                pass
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "build-document-check") as directory:
+            work = Path(directory)
+            paths = [work / "one.png", work / "two.png"]
+            for path in paths:
+                Image.new("RGB", (30, 30), "red").save(path)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                analyzer = ImageAnalyzer(f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
+                                         "local-chat", "parallel", work / "cache", timeout=5)
+                blocks = [{"type": "image", "imagePath": str(path)} for path in paths]
+                warnings = []
+                describe_images(blocks, analyzer, warnings, lambda text: None, 2)
+                self.assertEqual(warnings, [])
+                self.assertEqual([b["text"] for b in blocks], ["PUMP-417", "PUMP-417"])
+                self.assertEqual(len(requests), 2)
+                self.assertEqual(len(list((work / "cache").glob("*.json"))), 1)
+                self.assertEqual(list((work / "cache").glob("*.tmp")), [])
+                describe_images(blocks, analyzer, warnings, lambda text: None, 2)
+                self.assertEqual(len(requests), 2)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
+
+    def test_one_slow_image_does_not_skip_the_remaining_document(self):
+        from urllib.error import URLError
+        for failure in (TimeoutError("slow image"), URLError(TimeoutError("read timeout"))):
+            with self.subTest(failure=failure):
+                analyzer = Mock()
+                analyzer.describe.side_effect = [failure, ("Следующее изображение", False)]
+                blocks = [{"type": "image", "imagePath": path} for path in ("slow", "next")]
+                warnings = []
+                describe_images(blocks, analyzer, warnings, lambda text: None)
+                self.assertEqual(analyzer.describe.call_count, 2)
+                self.assertEqual(blocks[1]["text"], "Следующее изображение")
+                self.assertEqual(len(warnings), 1)
+
+    def test_invalid_parallelism_is_rejected(self):
+        for workers in (0, 3):
+            with self.assertRaises(ValueError):
+                describe_images([], None, [], lambda text: None, workers)
 
 
 if __name__ == "__main__":

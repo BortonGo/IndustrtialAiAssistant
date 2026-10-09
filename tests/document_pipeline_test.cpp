@@ -26,6 +26,7 @@ static void checkWorkerLifecycle(const QDir& repo) {
     QFile file(script);
     if (!file.open(QIODevice::WriteOnly)) throw std::runtime_error("Cannot write worker fixture");
     file.write("import json,sys,time,subprocess\n"
+               "assert sys.argv[sys.argv.index('--vision-parallel-requests')+1]=='2'\n"
                "if sys.argv[1]=='success':\n"
                " print(json.dumps({'text':'ok','blocks':[{'type':'text','text':'ok','pageNumber':0}],'warnings':[]}))\n"
                "else:\n"
@@ -37,6 +38,8 @@ static void checkWorkerLifecycle(const QDir& repo) {
         DocumentExtractionConfig config;
         config.pythonPath = repo.filePath("document_tools/.venv/Scripts/python.exe");
         config.scriptPath = script;
+        config.visionUrl = "http://127.0.0.1/unused";
+        config.visionParallelRequests = 2;
         config.inactivityTimeoutMs = timeout ? 1000 : 5000;
         DocumentExtractor extractor(config);
         QEventLoop loop;
@@ -177,6 +180,7 @@ int main(int argc, char** argv) {
             config.scriptPath = repo.filePath("document_tools/read_document.py");
             config.popplerDirectory = repo.filePath("tools/poppler-26.09.0/Library/bin");
             if (app.arguments().size() > 3) config.visionUrl = app.arguments()[3];
+            if (app.arguments().size() > 4) config.visionParallelRequests = qBound(1, app.arguments()[4].toInt(), 2);
             config.visionProfile = "test-Qwen3VL8B";
             DocumentLoader loader(config);
             QEventLoop loop;

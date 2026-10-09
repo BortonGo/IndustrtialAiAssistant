@@ -148,7 +148,8 @@ void DocumentExtractor::extract(const QString& path)
     args << "-u" << config_.scriptPath << path << "--images-dir" << QDir(cache).filePath("document-images")
          << "--poppler-dir" << config_.popplerDirectory;
     if (!config_.visionUrl.isEmpty()) args << "--vision-url" << config_.visionUrl
-                                        << "--vision-profile" << config_.visionProfile;
+                                        << "--vision-profile" << config_.visionProfile
+                                        << "--vision-parallel-requests" << QString::number(config_.visionParallelRequests);
     if (!config_.sofficePath.isEmpty()) args << "--soffice" << config_.sofficePath;
     active_ = true;
     timer_->start();

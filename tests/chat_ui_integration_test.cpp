@@ -29,6 +29,9 @@
 #include <QTextBrowser>
 #include <QPushButton>
 #include <QClipboard>
+#include <QKeyEvent>
+#include <QMimeData>
+#include <QStandardPaths>
 #include <stdexcept>
 
 namespace {
@@ -217,6 +220,113 @@ int main(int argc, char** argv) {
         page->setAttachmentPaths({photo}); // Another chat was selected before the queued click completed.
         QCoreApplication::processEvents();
         require(page->attachmentPaths() == QStringList{photo}, "Queued removal changed another chat's draft");
+        page->clearInput();
+
+        // Exercise QTextEdit's real paste path, with isolated clipboard image storage.
+        QStandardPaths::setTestModeEnabled(true);
+        const auto oldApplicationName = app.applicationName();
+        app.setApplicationName("clipboard-test-" + QUuid::createUuid().toString().mid(1,36));
+        auto* input = page->findChild<QTextEdit*>("messageInput");
+        auto* composer = page->findChild<MessageComposer*>();
+        require(input && composer, "Composer input missing");
+        QString pasteError;
+        const auto pasteErrorConnection = QObject::connect(composer, &MessageComposer::attachmentError,
+            [&](const QString& error) { pasteError = error; });
+        QImage screenshot(480, 240, QImage::Format_ARGB32);
+        screenshot.fill(QColor("#28292B"));
+        { QPainter painter(&screenshot); painter.setPen(Qt::white);
+          painter.drawText(screenshot.rect(), Qt::AlignCenter, QStringLiteral("Ошибка подключения: порт занят")); }
+        page->setInputText(QStringLiteral("Как это исправить?"));
+        QApplication::clipboard()->setImage(screenshot);
+        require(input->canPaste(), "Image-only clipboard does not enable Paste");
+        input->setFocus();
+        QKeyEvent pasteKey(QEvent::KeyPress, Qt::Key_V, Qt::ControlModifier);
+        QApplication::sendEvent(input, &pasteKey);
+        require(pasteError.isEmpty() && page->attachmentPaths().size() == 1, "Ctrl+V did not attach screenshot");
+        const auto pastedPath = page->attachmentPaths().front();
+        require(QImage(pastedPath) == screenshot, "Pasted screenshot lost image data");
+        require(page->inputText() == QStringLiteral("Как это исправить?"), "Image paste replaced question text");
+        require(draftAttachments->isVisible() && draftAttachments->findChildren<QWidget*>("attachmentCard").size() == 1,
+                "Pasted screenshot has no attachment preview");
+        QCoreApplication::processEvents();
+        window.grab().save("build-qtcreator/chat-clipboard-preview.png");
+        input->paste();
+        require(page->attachmentPaths().size() == 1, "Repeated paste duplicated identical attachment");
+        page->setAttachmentPaths({}); // Switch to another chat's draft, then return.
+        require(QFile::exists(pastedPath), "Switching chats deleted pasted source");
+        page->setAttachmentPaths({pastedPath});
+        QApplication::clipboard()->setPixmap(QPixmap::fromImage(screenshot));
+        input->paste();
+        require(pasteError.isEmpty(), qPrintable(pasteError));
+        require(page->attachmentPaths() == QStringList{pastedPath}, "Pixmap paste did not reuse identical screenshot");
+        page->setAttachmentPaths({photo, draftFile, source});
+        input->paste();
+        require(page->attachmentPaths().size() == 4, "Screenshot cannot be combined with selected files");
+        input->paste();
+        require(!pasteError.isEmpty() && page->attachmentPaths().size() == 4, "Paste bypassed attachment limit");
+        page->addAttachmentPaths({"fifth.txt"});
+        require(page->attachmentPaths().size() == 4, "File selection bypassed shared attachment limit");
+        page->clearInput();
+        page->setUploadEnabled(false); pasteError.clear(); input->paste();
+        require(!pasteError.isEmpty() && page->attachmentPaths().isEmpty(), "Paste bypassed disabled uploads");
+        // Text, including rich clipboard text, must still paste while uploads are disabled.
+        auto* textMime = new QMimeData;
+        textMime->setHtml("<b>Plain question</b>"); textMime->setText("Plain question");
+        QApplication::clipboard()->setMimeData(textMime);
+        input->paste();
+        require(page->inputText() == "Plain question" && page->attachmentPaths().isEmpty(), "Text paste broken");
+        page->setUploadEnabled(true); pasteError.clear();
+        auto* invalidImage = new QMimeData; invalidImage->setImageData(QImage());
+        QApplication::clipboard()->setMimeData(invalidImage); input->paste();
+        require(!pasteError.isEmpty() && page->attachmentPaths().isEmpty() && page->inputText() == "Plain question",
+                "Invalid image silently replaced draft");
+        page->setAttachmentPaths({pastedPath});
+        for (auto* button : draftAttachments->findChildren<QToolButton*>()) if (button->toolTip() == QStringLiteral("Убрать вложение")) {
+            button->click(); break;
+        }
+        waitFor([&]() { return page->attachmentPaths().isEmpty(); });
+        page->setAttachmentPaths({pastedPath});
+        page->clearInput();
+        require(QFile::exists(pastedPath), "Clearing sent draft removed source before indexing");
+        QObject::disconnect(pasteErrorConnection);
+        QFile::remove(pastedPath);
+        QDir().rmdir(QFileInfo(pastedPath).absolutePath());
+        QDir().rmdir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation));
+        QStandardPaths::setTestModeEnabled(false);
+        app.setApplicationName(oldApplicationName);
+        QApplication::clipboard()->clear();
+
+        int submitted = 0;
+        QString submittedText;
+        QStringList submittedAttachments;
+        const auto submitConnection = QObject::connect(page, &ChatWidget::sendRequested, [&](const QString& text) {
+            ++submitted; submittedText = text; submittedAttachments = page->attachmentPaths();
+        });
+        const auto pressEnter = [&](int key, Qt::KeyboardModifiers modifiers, bool repeat = false) {
+            QKeyEvent event(QEvent::KeyPress, key, modifiers, QString(), repeat);
+            QApplication::sendEvent(input, &event);
+        };
+        page->setSendEnabled(true);
+        page->setInputText(QStringLiteral("Первая строка"));
+        input->moveCursor(QTextCursor::End);
+        pressEnter(Qt::Key_Return, Qt::ShiftModifier);
+        require(submitted == 0 && page->inputText() == QStringLiteral("Первая строка\n"), "Shift+Enter sent message or lost newline");
+        input->insertPlainText(QStringLiteral("Вторая строка"));
+        pressEnter(Qt::Key_Return, Qt::NoModifier);
+        require(submitted == 1 && submittedText == QStringLiteral("Первая строка\nВторая строка")
+                && page->inputText() == submittedText, "Enter did not submit exact multiline question");
+        pressEnter(Qt::Key_Return, Qt::NoModifier, true);
+        require(submitted == 1, "Held Enter repeatedly submitted message");
+        page->setSendEnabled(false);
+        pressEnter(Qt::Key_Return, Qt::NoModifier);
+        require(submitted == 1 && page->inputText() == submittedText, "Enter bypassed disabled send button");
+        page->setSendEnabled(true); page->clearInput(); page->setAttachmentPaths({photo});
+        pressEnter(Qt::Key_Enter, Qt::KeypadModifier);
+        require(submitted == 2 && submittedText.isEmpty() && submittedAttachments == QStringList{photo},
+                "Numpad Enter did not submit image-only question");
+        pressEnter(Qt::Key_Enter, Qt::KeypadModifier | Qt::ShiftModifier);
+        require(submitted == 2 && page->inputText() == "\n", "Shift+Numpad Enter did not insert newline");
+        QObject::disconnect(submitConnection);
         page->clearInput();
 
         waitFor([&]() { return page->findChild<QWidget*>("messageComposer")->height() <= 100; });
