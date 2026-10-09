@@ -62,7 +62,7 @@ private:
     const Chat* findChat(const QString& chatId) const;
     Chat* findChat(const QString& chatId);
     QString appendMessage(const QString& chatId, MessageRole role, const QString& text,
-                          const QString& id, const QString& status = "complete", const QString& error = {});
+                          const QString& id, const QString& status = "complete", const QString& error = {}, const QString& replyTo = {});
     void restore();
     void finish(const QString& answer, const QString& error);
 };

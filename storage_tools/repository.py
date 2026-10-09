@@ -66,6 +66,7 @@ class Repository:
                     attachments.setdefault(row['message_id'], []).append(self.attachment_json(row))
                 for message in chat['messages']:
                     message['attachments'] = attachments.get(message['id'], [])
+                    message['source_references'] = self.references_json(message['source_references'])
             current = self.connection.execute("SELECT value FROM app_settings WHERE key='current_chat'").fetchone()
             current_id = current['value'] if current else str(chats[-1]['id'])
             if current_id not in {str(c['id']) for c in chats}:
@@ -129,6 +130,9 @@ class Repository:
                 "JOIN documents d ON d.id=b.document_id WHERE d.chat_id=%s AND b.kind='image'", (chat_id,))}
             images.update(row['preview_image'] for row in self.connection.execute(
                 "SELECT a.preview_image FROM message_attachments a JOIN messages m ON m.id=a.message_id WHERE m.chat_id=%s AND a.preview_image<>''", (chat_id,)))
+            images.update(row['path'] for row in self.connection.execute(
+                "SELECT r->>'imagePath' AS path FROM messages m, jsonb_array_elements(m.source_references) r "
+                "WHERE m.chat_id=%s AND r->>'imagePath'<>''", (chat_id,)))
             self.connection.execute("DELETE FROM chats WHERE id=%s", (chat_id,))
             remaining = list(self.connection.execute("SELECT * FROM chats ORDER BY created_at,id"))
             replacement = None
@@ -153,7 +157,9 @@ class Repository:
                 if self.connection.execute(
                         "SELECT 1 FROM document_blocks WHERE payload->>'imagePath'=%s "
                         "UNION ALL SELECT 1 FROM chunks WHERE metadata->>'imagePath'=%s "
-                        "UNION ALL SELECT 1 FROM message_attachments WHERE preview_image=%s LIMIT 1", (name, name, name)).fetchone():
+                        "UNION ALL SELECT 1 FROM message_attachments WHERE preview_image=%s "
+                        "UNION ALL SELECT 1 FROM messages m, jsonb_array_elements(m.source_references) r "
+                        "WHERE r->>'imagePath'=%s LIMIT 1", (name, name, name, name)).fetchone():
                     continue
                 target = assets / name
                 if assets.is_symlink() or assets.resolve() != self.data.resolve() / 'images' or target.is_symlink():
@@ -163,13 +169,62 @@ class Repository:
                 warnings.append(f'Не удалось удалить сохранённую копию {name}: {error}')
         return {'deletedChatId': chat_id, 'currentChatId': selected, 'replacementChat': replacement, 'warnings': warnings}
 
+    def references_json(self, references):
+        return [dict(ref, imagePath=str(self.data / 'images' / Path(ref['imagePath']).name)
+                     if ref.get('imagePath') else '') for ref in references]
+
     def save_context(self, params):
+        references = params.get('references', [])
+        if not isinstance(references, list) or len(references) > 64:
+            raise ValueError('Некорректный список источников')
+        stored = []
         with self.connection.transaction():
-            row = self.connection.execute("UPDATE messages SET context_snapshot=%s WHERE id=%s AND role='user' AND status='pending' RETURNING id",
-                                          (params['context'], params['id'])).fetchone()
-            if not row:
+            question = self.connection.execute("SELECT chat_id FROM messages WHERE id=%s AND role='user' AND status='pending' FOR UPDATE", (params['id'],)).fetchone()
+            if not question:
                 raise ValueError("Вопрос для сохранения источников не найден")
-        return {}
+            for number, ref in enumerate(references, 1):
+                if not isinstance(ref, dict) or not isinstance(ref.get('text'), str) or not ref['text'].strip():
+                    raise ValueError('Пустой фрагмент источника')
+                document = self.connection.execute('SELECT source_path FROM documents WHERE id=%s AND chat_id=%s',
+                                                   (ref.get('documentId'), question['chat_id'])).fetchone()
+                if not document:
+                    raise ValueError('Источник не принадлежит чату вопроса')
+                item = dict(number=number, documentId=ref['documentId'], sourcePath=document['source_path'], text=ref['text'])
+                for key, default in (('pageFirst', 0), ('pageLast', 0), ('blockFirst', -1), ('blockLast', -1)):
+                    value = ref.get(key, default)
+                    if type(value) is not int or value < default:
+                        raise ValueError('Некорректное положение источника')
+                    item[key] = value
+                if item['pageLast'] < item['pageFirst'] or item['blockLast'] < item['blockFirst']:
+                    raise ValueError('Некорректный диапазон источника')
+                tables = ref.get('tableIndices', [])
+                if not isinstance(tables, list) or any(type(n) is not int or n < 0 for n in tables):
+                    raise ValueError('Некорректные номера таблиц')
+                item['tableIndices'] = tables
+                section = ref.get('section', '')
+                if not isinstance(section, str):
+                    raise ValueError('Некорректный раздел источника')
+                item['section'] = section
+                image = ref.get('imagePath', '')
+                item['imagePath'] = ''
+                if image:
+                    if not isinstance(image, str):
+                        raise ValueError('Некорректное изображение источника')
+                    # A just-imported attachment can still reference the extraction cache.
+                    # Resolve by content to its existing durable copy in this document.
+                    if not Path(image).is_file() or Path(image).stat().st_size > 16 * 1024 * 1024:
+                        raise ValueError('Изображение источника недоступно или слишком велико')
+                    name = sha256(image) + '.png'
+                    asset = self.data / 'images' / name
+                    if (not asset.is_file()
+                            or not self.connection.execute("SELECT 1 FROM document_blocks WHERE document_id=%s AND payload->>'imagePath'=%s",
+                                                           (ref['documentId'], name)).fetchone()):
+                        raise ValueError('Изображение не принадлежит источнику')
+                    item['imagePath'] = name
+                stored.append(item)
+            self.connection.execute("UPDATE messages SET context_snapshot=%s,source_references=%s WHERE id=%s",
+                                    (params['context'], Jsonb(stored), params['id']))
+        return {'references': self.references_json(stored)}
 
     def question_history(self, params):
         question = self.connection.execute(

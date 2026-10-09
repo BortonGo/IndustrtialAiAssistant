@@ -285,15 +285,15 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
     };
 
     llmClient_ = new LMStudioLLMClient(chatConfig, this);
-    connect(llmClient_, &ILLMClient::contextPrepared, this, [this](const QString& sources, const QString& budget) {
+    connect(llmClient_, &ILLMClient::contextPrepared, this, [this](const QString& sources, const QString& budget, const QJsonArray& references) {
         if (shuttingDown_ || state_ != AssistantState::Generating) return;
         emit serverLogMessage(QStringLiteral("Контекст"), budget);
         const auto messageId = requestMessageId_;
         if (messageId.isEmpty()) { llmClient_->generatePrepared(); return; }
-        storage_->request("save_context", {{"id",messageId},{"context",sources}},
-                          [this,messageId,sources](const QJsonObject&, const QString& error) {
+        storage_->request("save_context", {{"id",messageId},{"context",sources},{"references",references}},
+                          [this,messageId,sources](const QJsonObject& data, const QString& error) {
             if (shuttingDown_ || state_ != AssistantState::Generating || requestMessageId_ != messageId) return;
-            if (error.isEmpty()) { emit contextSaved(messageId, sources); llmClient_->generatePrepared(); }
+            if (error.isEmpty()) { emit contextSaved(messageId, sources, data.value("references").toArray()); llmClient_->generatePrepared(); }
             else { state_ = AssistantState::Idle; busy_ = false; emit busyChanged(isBusy()); emit questionFailed(error); }
         });
     });

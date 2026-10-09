@@ -123,7 +123,14 @@ MessageWidget::MessageWidget(const ChatMessage& message, QWidget* parent) : QWid
         copy->setObjectName("copyAnswer"); copy->setIcon(UiStyle::icon(UiStyle::Icon::Copy));
         copy->setToolTip(QStringLiteral("Скопировать ответ")); copy->setAccessibleName(copy->toolTip());
         copy->setFixedSize(28, 28);
-        column->addWidget(copy, 0, Qt::AlignLeft);
+        auto* actions = new QHBoxLayout; actions->setSpacing(8);
+        actions->addWidget(copy);
+        sources_ = new QToolButton;
+        sources_->setObjectName("messageSources"); sources_->hide();
+        sources_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        sources_->setIcon(UiStyle::icon(UiStyle::Icon::Documents));
+        actions->addWidget(sources_); actions->addStretch(); column->addLayout(actions);
+        connect(sources_, &QToolButton::clicked, this, &MessageWidget::sourcesRequested);
         connect(copy, &QToolButton::clicked, this, [this, copy]() {
             QApplication::clipboard()->setText(answer_->toPlainText());
             copy->setToolTip(QStringLiteral("Ответ скопирован"));
@@ -156,6 +163,13 @@ void MessageWidget::setMessage(const ChatMessage& message) {
 void MessageWidget::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     if (event->size().width() != event->oldSize().width()) updateMinimumHeight();
+}
+
+void MessageWidget::setSourcesAvailable(bool available, int count) {
+    if (!sources_) return;
+    sources_->setText(count > 0 ? QStringLiteral("Источники · %1").arg(count) : QStringLiteral("Источники"));
+    sources_->setVisible(available);
+    sources_->setToolTip(QStringLiteral("Материалы, переданные модели для этого ответа"));
 }
 
 void MessageWidget::updateMinimumHeight() {

@@ -14,7 +14,7 @@ public:
     virtual void cancelRequests() = 0;
 signals:
     void answerProgress(const QString& text);
-    void contextPrepared(const QString& sources, const QString& budget);
+    void contextPrepared(const QString& sources, const QString& budget, const QJsonArray& references);
     void answerReady(const QString &answer);
     void errorOccurred(const QString &message);
 };

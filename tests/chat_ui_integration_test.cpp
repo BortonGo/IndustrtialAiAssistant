@@ -34,7 +34,12 @@
 #include <QMimeData>
 #include <QListWidget>
 #include <QStandardPaths>
+#include <QDialog>
+#include <QPointer>
+#include <QTcpServer>
+#include <QTextTable>
 #include <stdexcept>
+#include <cstdio>
 
 namespace {
 void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
@@ -57,6 +62,9 @@ QJsonObject request(StorageClient* storage, const QString& method, const QJsonOb
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
+    qInstallMessageHandler([](QtMsgType type, const QMessageLogContext&, const QString& message) {
+        if (type != QtDebugMsg) std::fprintf(stderr, "%s\n", message.toUtf8().constData());
+    });
     if (QApplication::platformName() == "offscreen") {
         QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeui.ttf");
         QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeuib.ttf");
@@ -66,12 +74,17 @@ int main(int argc, char** argv) {
     QTemporaryDir data(QDir::current().filePath("build-qtcreator/test-artifacts/storage/ui-XXXXXX"));
     require(data.isValid(), "No isolated directory");
     qputenv("LOCAL_ASSISTANT_STORAGE_DIR", data.path().toLocal8Bit());
-    qputenv("LOCAL_ASSISTANT_STORAGE_PORT", "55433");
+    QTcpServer freePort;
+    require(freePort.listen(QHostAddress::LocalHost, 0), "No free port for isolated PostgreSQL");
+    qputenv("LOCAL_ASSISTANT_STORAGE_PORT", QByteArray::number(freePort.serverPort())); freePort.close();
     AssistantService service;
     ChatManager chats(&service);
     ChatListModel model(&chats);
     QString failure;
     QObject::connect(&chats, &ChatManager::errorOccurred, [&](const QString& error) { failure = error; });
+    QObject::connect(service.storage(), &StorageClient::unavailable, [&](const QString& error) {
+        std::fprintf(stderr, "STORAGE: %s\n", error.toUtf8().constData()); failure = error;
+    });
     try {
         service.storage()->start();
         waitFor([&]() { return chats.currentChat() && service.isChatReady(chats.currentChat()->id); });
@@ -415,15 +428,16 @@ int main(int argc, char** argv) {
             + QString("| table value ").repeated(18) + "|\n\nEnd of answer.";
         page->setMessages({user, wide}); page->setWaitingForAnswer(true);
         auto* messages = page->findChild<QScrollArea*>();
-        auto* answer = page->findChild<QTextBrowser*>("answerText");
+        QPointer<QTextBrowser> answer = page->findChild<QTextBrowser*>("answerText");
         require(answer, "Rich answer view missing");
         auto settleLayout = [&]() {
             QElapsedTimer settling; settling.start();
             waitFor([&]() { return settling.elapsed() >= 100; });
             require(messages->horizontalScrollBar()->maximum() == 0, "Wide content stretched the whole chat");
             require(messages->widget()->width() <= messages->viewport()->width(), "Message column wider than viewport");
-            require(answer->verticalScrollBar()->maximum() == 0, "Answer height clips document text");
-            require(answer->toPlainText().contains(codeLine), "Wrapping changed the code contents");
+            if (auto* currentAnswer = page->findChild<QTextBrowser*>("answerText"))
+                require(currentAnswer->verticalScrollBar()->maximum() == 0, "Answer height clips document text");
+            if (answer) require(answer->toPlainText().contains(codeLine), "Wrapping changed the code contents");
         };
         window.resize(1920, 1000); settleLayout();
         window.resize(1100, 680); settleLayout();
@@ -460,8 +474,77 @@ int main(int argc, char** argv) {
         require(!timer->isActive() && !bubble->isVisible(), "Completed answer left activity running");
         const auto restored = request(service.storage(), "bootstrap", {});
         require(restored.value("chats").toArray().size() == 1 && failure.isEmpty(), "Deleted chats restored or UI operation failed");
+        // Restore source metadata through the real worker/ChatManager path after restart.
+        const auto sourceChat = chats.currentChat()->id;
+        request(service.storage(), "save_document", {{"chatId",sourceChat},{"document",doc},
+            {"entries",QJsonArray{QJsonObject{{"chunk",chunk},{"embedding",vector}}}}});
+        const auto q1 = QUuid::createUuid().toString().mid(1,36), a1 = QUuid::createUuid().toString().mid(1,36);
+        const auto q2 = QUuid::createUuid().toString().mid(1,36), a2 = QUuid::createUuid().toString().mid(1,36);
+        const QString excerpt = QStringLiteral("## Таблица 5.4.1\n\n| Параметр | Значение |\n|---|---|\n| Давление | 7.5 bar |\n| Кабинет | 218 |\n\nСохранённый фрагмент ORIGINAL-7319.");
+        request(service.storage(), "save_question", {{"id",q1},{"chatId",sourceChat},{"text",QStringLiteral("Какое давление указано в таблице?")},{"title","Sources"}});
+        request(service.storage(), "save_context", {{"id",q1},{"context",excerpt},{"references",QJsonArray{QJsonObject{
+            {"documentId",docId},{"text",excerpt},{"pageFirst",7},{"pageLast",8},{"tableIndices",QJsonArray{0}},
+            {"blockFirst",0},{"blockLast",1}}}}});
+        request(service.storage(), "finish_question", {{"questionId",q1},{"id",a1},{"text",QStringLiteral("В таблице указано **7.5 bar**. Источник [1].")}});
+        request(service.storage(), "save_question", {{"id",q2},{"chatId",sourceChat},{"text",QStringLiteral("Вопрос из старой версии")},{"title","Sources"}});
+        request(service.storage(), "save_context", {{"id",q2},{"context","LEGACY-ONLY"}});
+        request(service.storage(), "finish_question", {{"questionId",q2},{"id",a2},{"text","Legacy answer"}});
         service.storage()->stop(); waitFor([&]() { return service.storage()->isStopped(); });
-        qInfo() << "Qt deletion, navigation, attachments, streaming, scrolling, wide content and spinner lifecycle passed";
+        service.storage()->start();
+        waitFor([&]() { return service.storage()->isReady() && !chats.isBusy() && chats.currentChat() && chats.currentChat()->messages.size() == 4; });
+        const auto savedMessages = chats.currentChat()->messages;
+        page->showNotification({});
+        page->setChatTitle(QStringLiteral("Проверка источников"));
+        require(savedMessages[1].replyTo == q1 && savedMessages[0].sourceReferences.size() == 1, "Restored answer lost source identity");
+        page->setMessages(savedMessages); settleLayout();
+        auto sourceButtons = page->findChildren<QToolButton*>("messageSources");
+        require(sourceButtons.size() == 2 && sourceButtons[0]->isVisible(), "Per-answer source buttons missing");
+        sourceButtons[0]->click(); settleLayout();
+        auto* sourceList = page->findChild<QListWidget*>("answerSources");
+        require(sourceList->count() == 1 && sourceList->item(0)->text().contains(QStringLiteral("7–8")), "Wrong answer sources or PDF page range");
+        page->findChild<QPushButton*>("openSourceFragment")->click(); settleLayout();
+        QPointer<QDialog> preview = page->findChild<QDialog*>("sourcePreview");
+        require(preview && preview->isVisible(), "Source fragment did not open");
+        auto* excerptView = preview->findChild<QTextBrowser*>("sourceExcerpt");
+        require(excerptView->toPlainText().contains("ORIGINAL-7319") && !excerptView->toPlainText().contains("LEGACY-ONLY"), "Answer displayed another question's evidence");
+        bool renderedTable = false;
+        for (auto* frame : excerptView->document()->rootFrame()->childFrames()) if (qobject_cast<QTextTable*>(frame)) renderedTable = true;
+        require(renderedTable, "Source table lost its columns");
+        require(preview->findChild<QPushButton*>("openSourceOriginal")->isEnabled(), "Existing source file unavailable");
+        window.grab().save("build-qtcreator/chat-sources-preview.png");
+        preview->grab().save("build-qtcreator/source-fragment-preview.png");
+        preview->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        // Missing originals do not erase the evidence from the answer.
+        require(QFile::remove(source), "Cannot remove isolated original fixture");
+        page->findChild<QPushButton*>("openSourceFragment")->click(); settleLayout();
+        preview = page->findChild<QDialog*>("sourcePreview");
+        require(preview && !preview->findChild<QPushButton*>("openSourceOriginal")->isEnabled() &&
+                preview->findChild<QTextBrowser*>("sourceExcerpt")->toPlainText().contains("ORIGINAL-7319"), "Missing file destroyed snapshot");
+        sourceButtons[1]->click(); settleLayout();
+        require((!preview || !preview->isVisible()) && sourceList->count() == 0 &&
+                page->findChild<QTextEdit*>("sourceText")->toPlainText() == "LEGACY-ONLY", "Legacy snapshot or selection changed incorrectly");
+        page->setMessages({}); settleLayout();
+        require(sourceList->count() == 0 && page->findChild<QTextEdit*>("sourceText")->toPlainText().isEmpty(), "Sources leaked into another chat");
+        auto imageQuestion = savedMessages[0];
+        auto imageSource = imageQuestion.sourceReferences[0].toObject();
+        imageSource["pageFirst"] = 0; imageSource["pageLast"] = 0;
+        imageSource["imagePath"] = photo; imageSource["sourcePath"] = "//server/share/picture.png";
+        imageSource["text"] = QStringLiteral("Сохранённое описание: PUMP-417, 7.5 bar.\n\n![untrusted](file:///C:/Windows/win.ini)");
+        imageQuestion.sourceReferences = QJsonArray{imageSource};
+        page->setMessages({imageQuestion, savedMessages[1]}); settleLayout();
+        page->findChild<QToolButton*>("messageSources")->click();
+        page->findChild<QPushButton*>("openSourceFragment")->click(); settleLayout();
+        preview = page->findChild<QDialog*>("sourcePreview");
+        auto* imageLabel = preview->findChild<QLabel*>("sourceImage");
+        require(imageLabel && imageLabel->pixmap() && !imageLabel->pixmap()->isNull(), "Source image preview missing");
+        require(preview->findChild<QLabel*>("sourcePosition")->text().contains(QStringLiteral("Страница не определена")), "Unknown page was invented");
+        require(!preview->findChild<QPushButton*>("openSourceOriginal")->isEnabled(), "Network path could be opened as a local source");
+        require(preview->findChild<QTextBrowser*>("sourceExcerpt")->document()->resource(QTextDocument::ImageResource,
+                QUrl::fromLocalFile(photo)).isNull(), "Untrusted Markdown loaded a local resource");
+        preview->grab().save("build-qtcreator/source-image-preview.png");
+        page->setMessages({}); settleLayout();
+        service.storage()->stop(); waitFor([&]() { return service.storage()->isStopped(); });
+        qInfo() << "Qt sources, restart, legacy snapshots, images, deletion, navigation, attachments, streaming and layout passed";
         return 0;
     } catch (const std::exception& error) {
         qCritical() << error.what(); service.storage()->stop();

@@ -43,7 +43,8 @@ int main(int argc, char** argv) {
     AssistantService service; ChatManager chats(&service);
     QString error;
     QObject::connect(&chats, &ChatManager::errorOccurred, [&](const QString& text) { error = text; });
-    QObject::connect(&service, &AssistantService::errorOccurred, [&](const QString& text) { error = text; });
+    QObject::connect(&service, &AssistantService::errorOccurred, [&](const QString& text) { error = text; qWarning().noquote() << text; });
+    QObject::connect(&chats, &ChatManager::errorOccurred, [&](const QString& text) { qWarning().noquote() << text; });
     bool stopped = false;
     QObject::connect(&service, &AssistantService::serversStopped, [&]() { stopped = true; });
     try {
@@ -70,6 +71,17 @@ int main(int argc, char** argv) {
         require(messages.size() == 2 && messages[0].attachments.size() == 2, "Attachment metadata or answer missing");
         require(messages[1].text.contains("7.5") && messages[1].text.contains("ATTACHED-842") && !messages[1].text.contains("999"), "Model did not use both message attachments");
         require(!messages[0].contextSnapshot.contains("unrelated-library"), "Library file displaced explicit attachments");
+        require(messages[1].replyTo == messages[0].id && !messages[0].sourceReferences.isEmpty(), "Answer lost its saved sources");
+        bool savedImageSource = false;
+        for (const auto& value : messages[0].sourceReferences) {
+            const auto source = value.toObject();
+            require(!source.value("sourcePath").toString().contains("unrelated-library"), "Source cards include unselected documents");
+            if (!source.value("imagePath").toString().isEmpty()) {
+                savedImageSource = true;
+                require(QFileInfo(source.value("imagePath").toString()).isFile(), "Source image was not retained");
+            }
+        }
+        require(savedImageSource, "Vision answer has no saved image source");
         const auto image = messages[0].attachments[0];
         require(!image.documentId.isEmpty() && QFileInfo(image.previewPath).isFile(), "Persistent photo preview missing");
         qInfo().noquote() << "Photo + note:" << messages[1].text;

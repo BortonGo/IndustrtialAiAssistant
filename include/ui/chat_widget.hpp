@@ -3,6 +3,7 @@
 #include "message_composer.hpp"
 
 #include <QWidget>
+#include <QMap>
 #include <QString>
 #include <QTextEdit>
 #include <QLabel>
@@ -14,13 +15,19 @@
 
 class ThinkingIndicator;
 class MessageWidget;
+class SourcePanel;
+class QPushButton;
 
 class ChatWidget : public QWidget {
     Q_OBJECT
 
     QScrollArea* messagesScroll_;
     QVBoxLayout* messagesLayout_;
-    QTextEdit* textContext_;
+    SourcePanel* sourceView_;
+    QPushButton* sourcesToggle_;
+    QMap<QString, ChatMessage> sourceQuestions_;
+    QString selectedQuestion_, latestQuestion_;
+    void showSources(const QString& questionId, bool openPanel);
     QLabel* notificationLabel_;
     QLabel* chatTitle_;
     QWidget* sourcesPanel_;
@@ -40,7 +47,6 @@ public:
     void setMessages(const std::vector<ChatMessage>& messages, bool scrollToBottom = true);
     void setStreamingAnswer(const QString& text);
     void setWaitingForAnswer(bool waiting);
-    void setContextText(const QString& text);
     void setChatTitle(const QString& title);
     void showNotification(const QString& text);
     void clearInput();

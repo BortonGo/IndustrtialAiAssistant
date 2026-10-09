@@ -1,4 +1,5 @@
 #pragma once
+#include <QJsonArray>
 
 #include <QString>
 #include <QDateTime>
@@ -26,6 +27,8 @@ struct ChatMessage final {
     QString status = "complete";
     QString error;
     QString contextSnapshot;
+    QJsonArray sourceReferences;
+    QString replyTo;
     std::vector<MessageAttachment> attachments;
 };
 

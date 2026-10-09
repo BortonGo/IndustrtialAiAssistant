@@ -218,9 +218,17 @@ int main(int argc, char** argv) {
                 "Current question must follow reference images");
 
         request.sources = {{"Keep this source", {}}, {QString(40000, 'x'), picture.fileName()}};
+        request.sources[0].location = QJsonObject{{"documentId", "kept"}, {"pageFirst", 12}};
+        request.sources[1].location = QJsonObject{{"documentId", "dropped"}};
         const auto trimmed = run(request);
         require(trimmed.sourceCount == 1 && trimmed.imageReserve == 0, "Lowest ranked oversized source was not removed");
         require(trimmed.sourcesSnapshot.contains("Keep this source"), "Useful source lost");
+        require(trimmed.sourceReferences.size() == 1 && trimmed.sourceReferences[0].toObject()["documentId"] == "kept" &&
+                trimmed.sourceReferences[0].toObject()["text"] == "Keep this source" &&
+                trimmed.sourceReferences[0].toObject()["pageFirst"] == 12 &&
+                trimmed.sourceReferences[0].toObject()["number"] == 1 &&
+                trimmed.sourcesSnapshot.contains(QStringLiteral("[Источник 1]")), "References do not match final budgeted evidence");
+        require(conversation.sourceReferences.isEmpty(), "Conversation acquired document sources");
         request.sources = {{QString(40000, 'x'), {}, "Table summary", "table-a", true}};
         run(request, false); // Do not silently drop the explicitly requested complete table.
         const auto summary = run(request, true, ContextBuilder::Purpose::Selection);

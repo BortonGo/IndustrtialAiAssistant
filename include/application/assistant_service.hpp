@@ -118,7 +118,7 @@ public:
 
 signals:
     void chatActivated(const QString& chatId);
-    void contextSaved(const QString& messageId, const QString& context);
+    void contextSaved(const QString& messageId, const QString& context, const QJsonArray& references);
     void answerReady(const QString &answer);
     void answerProgress(const QString& messageId, const QString& text);
     void attachmentsSaved(const QString& messageId, const QJsonArray& attachments);

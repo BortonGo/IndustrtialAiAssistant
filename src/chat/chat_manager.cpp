@@ -35,11 +35,13 @@ ChatManager::ChatManager(AssistantService* service, QObject* parent) : QObject(p
         if (first) emit chatActivityChanged();
     });
     connect(service_, &AssistantService::questionFailed, this, [this](const QString& error) { finish({}, error); });
-    connect(service_, &AssistantService::contextSaved, this, [this](const QString& id, const QString& text) {
+    connect(service_, &AssistantService::contextSaved, this, [this](const QString& id, const QString& text, const QJsonArray& references) {
         if (pendingMessageId_ != id) return;
         auto* chat = findChat(pendingChatId_);
         if (!chat) return;
-        for (auto& message : chat->messages) if (message.id == pendingMessageId_) message.contextSnapshot = text;
+        for (auto& message : chat->messages) if (message.id == pendingMessageId_) {
+            message.contextSnapshot = text; message.sourceReferences = references;
+        }
         emit messageAdded(pendingChatId_, pendingMessageId_);
     });
     connect(service_, &AssistantService::attachmentsSaved, this, [this](const QString& id, const QJsonArray& values) {
@@ -66,6 +68,8 @@ void ChatManager::restore() {
                 message.text = object.value("text").toString(); message.createdAt = date(object.value("created_at"));
                 message.status = object.value("status").toString(); message.error = object.value("error").toString();
                 message.contextSnapshot = object.value("context_snapshot").toString();
+                message.sourceReferences = object.value("source_references").toArray();
+                message.replyTo = object.value("reply_to").toString();
                 message.attachments = attachmentsFromJson(object.value("attachments").toArray());
                 chat.messages.push_back(std::move(message));
             }
@@ -161,9 +165,10 @@ bool ChatManager::deleteChat(const QString& id) {
 }
 
 QString ChatManager::appendMessage(const QString& chatId, MessageRole role, const QString& text,
-                                   const QString& id, const QString& status, const QString& error) {
+                                   const QString& id, const QString& status, const QString& error, const QString& replyTo) {
     auto* chat = findChat(chatId); if (!chat) return {};
     ChatMessage message; message.id = id; message.chatId = chatId; message.role = role;
+    message.replyTo = replyTo;
     message.text = text; message.createdAt = QDateTime::currentDateTimeUtc(); message.status = status; message.error = error;
     if (chat->messages.empty() && role == MessageRole::User) { chat->title = titleFor(text); emit chatTitleChanged(chatId); }
     chat->messages.push_back(std::move(message)); emit messageAdded(chatId, id); return id;
@@ -219,7 +224,7 @@ void ChatManager::finish(const QString& result, const QString& failure) {
         }
         pendingAnswer_.clear();
         if (!answer.isEmpty()) appendMessage(chatId, MessageRole::Assistant, answer, answerId,
-            error.isEmpty() ? (failure.isEmpty() ? "complete" : "failed") : "unsaved", error.isEmpty() ? failure : error);
+            error.isEmpty() ? (failure.isEmpty() ? "complete" : "failed") : "unsaved", error.isEmpty() ? failure : error, questionId);
         else emit messageAdded(chatId, questionId);
         pendingChatId_.clear(); pendingMessageId_.clear(); finishing_ = false; emit operationChanged();
         if (!error.isEmpty() || !failure.isEmpty()) emit errorOccurred(error.isEmpty() ? failure : QStringLiteral("Не удалось сохранить результат: ") + error);

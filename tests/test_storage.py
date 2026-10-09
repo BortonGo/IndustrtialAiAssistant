@@ -125,6 +125,86 @@ class StorageTests(unittest.TestCase):
         self.assertIn('табличка', messages[0]['context_snapshot'])
         self.assertEqual(str(messages[1]['reply_to']), question_id)
 
+    def test_source_snapshots_survive_reindex_and_restart(self):
+        chat_id, question = self.chat(), str(uuid.uuid4())
+        document, entries = self.document()
+        self.repo.save_document({'chatId': chat_id, 'document': document, 'entries': entries})
+        image = self.repo.load_chat({'chatId': chat_id})['documents'][0]['blocks'][0]['imagePath']
+        self.repo.save_question({'id': question, 'chatId': chat_id, 'text': 'Давление?', 'title': 'Источники'})
+        ref = dict(documentId=document['id'], sourcePath='ignored', text='Old value: 7.5 bar', imagePath=image,
+                   pageFirst=4, pageLast=4, tableIndices=[0], blockFirst=0, blockLast=1)
+        saved = self.repo.save_context({'id': question, 'context': 'Old evidence', 'references': [ref]})['references']
+        self.assertEqual(saved[0]['sourcePath'], document['sourcePath'])
+        # Newly attached images can still live in the extractor cache in the C++ workspace.
+        ref['imagePath'] = document['sourcePath']
+        saved_from_cache = self.repo.save_context({'id': question, 'context': 'Old evidence', 'references': [ref]})['references']
+        self.assertEqual(saved_from_cache, saved)
+        self.repo.finish_question({'questionId': question, 'id': str(uuid.uuid4()), 'text': '7.5 bar'})
+        document['text'] = 'New value: 12 bar'
+        document['blocks'] = [{'type': 'text', 'text': document['text'], 'pageNumber': 0}]
+        entries[0]['chunk'] = dict(documentId=document['id'], text=document['text'], startOffset=0)
+        self.repo.save_document({'chatId': chat_id, 'document': document, 'entries': entries})
+        Path(document['sourcePath']).unlink()
+        restarted = Repository(self.options, self.work / 'data', self.model)
+        try:
+            message = restarted.bootstrap({})['chats'][0]['messages'][0]
+            self.assertEqual(message['source_references'], saved)
+            self.assertEqual(message['context_snapshot'], 'Old evidence')
+            self.assertTrue(Path(saved[0]['imagePath']).is_file())
+        finally:
+            restarted.close()
+
+    def test_sources_reject_cross_chat_and_invalid_locations(self):
+        a, b, question = self.chat(), self.chat(), str(uuid.uuid4())
+        document, entries = self.document()
+        self.repo.save_document({'chatId': a, 'document': document, 'entries': entries})
+        self.repo.save_question({'id': question, 'chatId': b, 'text': 'Q', 'title': 'Q'})
+        ref = dict(documentId=document['id'], text='Evidence')
+        with self.assertRaises(ValueError):
+            self.repo.save_context({'id': question, 'context': 'foreign', 'references': [ref]})
+        self.repo.finish_question({'questionId': question, 'error': 'fixture'})
+        question = str(uuid.uuid4())
+        self.repo.save_question({'id': question, 'chatId': a, 'text': 'Q', 'title': 'Q'})
+        self.repo.save_context({'id': question, 'context': 'unchanged'})
+        for changes in ({'pageFirst': -1}, {'pageFirst': True}, {'pageFirst': 4, 'pageLast': 2},
+                        {'tableIndices': [-1]}, {'section': []}, {'imagePath': str(self.model)}):
+            with self.assertRaises(ValueError):
+                self.repo.save_context({'id': question, 'context': 'invalid', 'references': [dict(ref, **changes)]})
+        row = self.repo.connection.execute('SELECT context_snapshot,source_references FROM messages WHERE id=%s', (question,)).fetchone()
+        self.assertEqual(row, {'context_snapshot': 'unchanged', 'source_references': []})
+
+    def test_source_image_lifetime_after_reindex_and_chat_deletion(self):
+        a, b, question = self.chat(), self.chat(), str(uuid.uuid4())
+        document, entries = self.document()
+        self.repo.save_document({'chatId': a, 'document': copy.deepcopy(document), 'entries': copy.deepcopy(entries)})
+        other = copy.deepcopy(document); other['id'] = str(uuid.uuid4())
+        other_entries = copy.deepcopy(entries); other_entries[0]['chunk']['documentId'] = other['id']
+        self.repo.save_document({'chatId': b, 'document': other, 'entries': other_entries})
+        image = self.repo.load_chat({'chatId': a})['documents'][0]['blocks'][0]['imagePath']
+        self.repo.save_question({'id': question, 'chatId': a, 'text': 'Q', 'title': 'Q'})
+        self.repo.save_context({'id': question, 'context': 'Saved image', 'references': [dict(documentId=document['id'], text='Old image', imagePath=image)]})
+        self.repo.finish_question({'questionId': question, 'id': str(uuid.uuid4()), 'text': 'A'})
+        document['blocks'] = [{'type': 'text', 'text': 'new', 'pageNumber': 0}]; document['text'] = 'new'
+        entries[0]['chunk'] = dict(documentId=document['id'], text='new', startOffset=0)
+        self.repo.save_document({'chatId': a, 'document': document, 'entries': entries})
+        self.repo.delete_chat({'chatId': b})
+        self.assertTrue(Path(image).is_file(), 'Another chat deleted an image used only by an old answer')
+        self.repo.delete_chat({'chatId': a})
+        self.assertFalse(Path(image).exists(), 'Last snapshot did not release its image')
+        self.assertTrue(Path(document['sourcePath']).is_file())
+
+    def test_sources_migration_keeps_legacy_context(self):
+        chat_id, question = self.chat(), str(uuid.uuid4())
+        self.repo.save_question({'id': question, 'chatId': chat_id, 'text': 'Old Q', 'title': 'Old'})
+        self.repo.save_context({'id': question, 'context': 'Legacy evidence'})
+        with self.repo.connection.transaction():
+            self.repo.connection.execute('ALTER TABLE messages DROP COLUMN source_references')
+            self.repo.connection.execute('DELETE FROM schema_migrations WHERE version=6')
+        self.repo.migrate(); self.repo.migrate()
+        message = self.repo.bootstrap({})['chats'][0]['messages'][0]
+        self.assertEqual(message['source_references'], [])
+        self.assertEqual(message['context_snapshot'], 'Legacy evidence')
+
     def test_different_embedding_profile_is_not_used(self):
         chat_id = self.chat()
         document, entries = self.document()

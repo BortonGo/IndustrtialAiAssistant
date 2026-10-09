@@ -1,4 +1,5 @@
 #include "chat_widget.hpp"
+#include "source_panel.hpp"
 #include "message_widget.hpp"
 #include "thinking_indicator.hpp"
 #include "ui_style.hpp"
@@ -159,20 +160,9 @@ ChatWidget::ChatWidget(QWidget* parent): QWidget(parent) {
     documents->setIcon(UiStyle::icon(UiStyle::Icon::Documents));
     sourcesLayout->addWidget(documents, 0, Qt::AlignLeft);
     connect(documents, &QPushButton::clicked, this, &ChatWidget::documentsPageRequested);
-    textContext_ = new QTextEdit;
-    textContext_->setObjectName("sourceText");
-    textContext_->setStyleSheet(
-        "QTextEdit {"
-        " background-color: #202122;"
-        " color: #A5A6AA;"
-        " border: none;"
-        " padding: 2px;"
-        " font-size: 13px;"
-        "}"
-    );
-    textContext_->setReadOnly(true);
-    textContext_->setPlaceholderText(QStringLiteral("Источники появятся после вопроса по документам."));
-    sourcesLayout->addWidget(textContext_, 1);
+    sourceView_ = new SourcePanel;
+    sourcesToggle_ = btnContext;
+    sourcesLayout->addWidget(sourceView_, 1);
     sourcesPanel_->hide();
 
     notificationLabel_ = new QLabel;
@@ -226,8 +216,20 @@ void ChatWidget::setMessages(const std::vector<ChatMessage>& messages, bool scro
         delete item;
     }
 
+    sourceQuestions_.clear();
+    QString latest;
+    for (const auto& message : messages) if (message.role == MessageRole::User) {
+        sourceQuestions_.insert(message.id, message); latest = message.id;
+    }
+    if (latest != latestQuestion_ || !sourceQuestions_.contains(selectedQuestion_)) selectedQuestion_ = latest;
+    latestQuestion_ = latest;
+    showSources(selectedQuestion_, false);
     for (const auto& message : messages) {
         auto* widget = new MessageWidget(message);
+        const auto question = sourceQuestions_.value(message.replyTo);
+        widget->setSourcesAvailable(!question.contextSnapshot.isEmpty() || !question.sourceReferences.isEmpty(), question.sourceReferences.size());
+        const auto replyTo = message.replyTo;
+        connect(widget, &MessageWidget::sourcesRequested, this, [this, replyTo]() { showSources(replyTo, true); });
         messagesLayout_->addWidget(widget);
         widget->show();
     }
@@ -274,8 +276,11 @@ void ChatWidget::setWaitingForAnswer(bool waiting) {
     conversationPages_->setCurrentWidget(hasMessages_ || waiting || streamingMessage_ ? messagesScroll_ : welcomePage_);
 }
 
-void ChatWidget::setContextText(const QString& text) {
-    textContext_->setPlainText(text);
+void ChatWidget::showSources(const QString& questionId, bool openPanel) {
+    selectedQuestion_ = questionId;
+    const auto question = sourceQuestions_.value(questionId);
+    sourceView_->setSources(question.text, question.contextSnapshot, question.sourceReferences);
+    if (openPanel) sourcesToggle_->setChecked(true);
 }
 
 void ChatWidget::setChatTitle(const QString& title) {

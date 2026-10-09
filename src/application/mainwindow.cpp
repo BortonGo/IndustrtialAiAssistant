@@ -220,17 +220,11 @@ MainWindow::MainWindow(QWidget *parent) :
         if (!chat) {
             chatPage->setChatTitle({});
             chatPage->setMessages({});
-            chatPage->setContextText({});
             return;
         }
         chatPage->setChatTitle(chat->title);
         chatPage->setMessages(chat->messages, scrollToBottom);
         chatPage->setStreamingAnswer(chatManager->pendingAnswer(chat->id));
-        QString sources;
-        for (auto it = chat->messages.rbegin(); it != chat->messages.rend(); ++it) {
-            if (it->role == MessageRole::User) { sources = it->contextSnapshot; break; }
-        }
-        chatPage->setContextText(sources);
     };
     connect(chatManager, &ChatManager::chatTitleChanged, this, [chatManager, chatPage](const QString& id) {
         const auto* chat = chatManager->currentChat();

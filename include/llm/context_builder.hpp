@@ -19,6 +19,7 @@ struct ContextSource {
     QString groupId; // A table/section and its images are kept or removed together.
     bool required = false;
     bool containsTables = false;
+    QJsonObject location; // Extractor provenance, never model-generated links.
 };
 struct ConversationTurn { QString question; QString answer; };
 enum class SystemStatusAccess { Unresolved, NotRequested, Requested };
@@ -35,6 +36,7 @@ struct GenerationRequest {
 struct PreparedContext {
     QJsonArray messages;
     QString sourcesSnapshot;
+    QJsonArray sourceReferences;
     int textTokens = 0;
     int imageReserve = 0;
     int historyPairs = 0;

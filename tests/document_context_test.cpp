@@ -60,6 +60,13 @@ int main(int argc, char** argv) {
                 full[0].text.contains(QStringLiteral("24 байта")), "Named small document lost tables or notes");
 
         const auto targeted = DocumentContext::collect(QStringLiteral("Объясни таблицу 5.4.1"), {&document}, {}, {});
+        require(targeted[0].location.value("documentId") == document.id &&
+                targeted[0].location.value("pageFirst").toInt() == 0 &&
+                targeted[0].location.value("tableIndices").toArray() == QJsonArray{0}, "Table provenance or unknown DOCX page lost");
+        auto paged = document;
+        for (auto& block : paged.blocks) block.pageNumber = 7;
+        const auto pdfTable = DocumentContext::collect(QStringLiteral("Объясни таблицу 5.4.1"), {&paged}, {}, {});
+        require(pdfTable[0].location.value("pageFirst") == 7 && pdfTable[0].location.value("pageLast") == 7, "PDF page lost");
         require(!targeted.empty() && targeted[0].text.contains("LAST_FIELD_A") && targeted[0].text.contains(QStringLiteral("35 байт")) &&
                 !targeted[0].text.contains("LAST_FIELD_B"), "Exact table reference lost its rows/notes or included the next table");
         auto large = document;
@@ -115,6 +122,8 @@ int main(int argc, char** argv) {
         const auto selected = selectContext(request, offered,
             "{\"context\":\"documents\",\"sources\":[0],\"history\":[],\"system_status\":false}");
         require(selected.sources.size() == 2, "Selection severed an image from its section");
+        require(selected.sources[0].location == withImage[0].location && selected.sources[1].location == withImage[1].location,
+                "Selection lost source locations");
         const auto unrelated = selectContext(request, offered,
             "{\"context\":\"conversation\",\"sources\":[0],\"history\":[],\"system_status\":false}");
         require(unrelated.sources.empty(), "Pinned document leaked into ordinary conversation");

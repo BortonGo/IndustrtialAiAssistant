@@ -71,7 +71,7 @@ void LMStudioLLMClient::prepareAnswer(const GenerationRequest& request) {
             QStringLiteral("Контекст: текст %1, резерв изображений %2, ответ до %3, запас %4 / окно %5; история: %6 пар; источники: %7; MCP: %8")
                 .arg(context.textTokens).arg(context.imageReserve).arg(context.maxAnswerTokens)
                 .arg(ContextBuilder::safetyTokens).arg(context.contextSize).arg(context.historyPairs).arg(context.sourceCount)
-                .arg(hasSystemStatus ? QStringLiteral("да") : QStringLiteral("нет")));
+            .arg(hasSystemStatus ? QStringLiteral("да") : QStringLiteral("нет")), context.sourceReferences);
     });
 }
 

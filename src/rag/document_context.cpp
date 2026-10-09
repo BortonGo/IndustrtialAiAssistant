@@ -42,6 +42,25 @@ QString blockText(const DocumentBlock& block) {
     return QStringLiteral("[Таблица: %1 строк; пустые ячейки сохранены]\n").arg(block.tableRows.size()) + lines.join('\n');
 }
 struct Range { int first; int last; }; // Exclusive end.
+QJsonObject location(const Document& document, Range range) {
+    QJsonObject result{{"documentId", document.id}, {"sourcePath", document.sourcePath},
+                       {"blockFirst", range.first}, {"blockLast", range.last}};
+    int firstPage = 0, lastPage = 0;
+    QJsonArray tables;
+    QString section;
+    for (int i = std::max(0, range.first); i < range.last && i < static_cast<int>(document.blocks.size()); ++i) {
+        const auto& block = document.blocks[i];
+        if (block.pageNumber > 0) {
+            firstPage = firstPage ? std::min(firstPage, block.pageNumber) : block.pageNumber;
+            lastPage = std::max(lastPage, block.pageNumber);
+        }
+        if (block.tableIndex >= 0 && !tables.contains(block.tableIndex)) tables.append(block.tableIndex);
+        if (section.isEmpty()) section = block.section;
+    }
+    result["pageFirst"] = firstPage; result["pageLast"] = lastPage;
+    result["tableIndices"] = tables; result["section"] = section;
+    return result;
+}
 Range tableRange(const Document& document, int index) {
     int first = index, last = index + 1;
     // Captions and section titles precede tables in DOCX as independent paragraphs.
@@ -165,10 +184,14 @@ std::vector<ContextSource> DocumentContext::collect(const QString& question, con
         }
         const auto summary = text.left(850) + QStringLiteral("\nСодержание разделов:\n") + titles.join('\n').left(2000) +
                 QStringLiteral("\nПолный текст источника: %1 символов. Таблицы и примечания передаются целиком.").arg(text.size());
-        result.push_back({text, {}, summary, key, required, containsTables});
-        for (const auto& path : images)
+        result.push_back({text, {}, summary, key, required, containsTables, location(document, range)});
+        for (const auto& path : images) {
+            int index = range.first;
+            while (index < range.last && document.blocks[index].imagePath != path) ++index;
             result.push_back({"Источник: " + document.sourcePath + QStringLiteral("\nИзображение связанного раздела."),
-                              path, QStringLiteral("Изображение источника: ") + document.sourcePath, key, required});
+                              path, QStringLiteral("Изображение источника: ") + document.sourcePath, key, required, false,
+                              location(document, {index, index + 1})});
+        }
     };
     const auto references = tableReferences(question);
     const bool wholeDocument = explicitlyWholeDocument(question);
@@ -214,17 +237,25 @@ std::vector<ContextSource> DocumentContext::collect(const QString& question, con
             if (included.contains(key)) continue;
             included.insert(key);
             auto text = hit.chunk.sourceDescription() + "\n" + coverageWarning(*document) + "\n" + hit.chunk.text;
+            Range range{hit.chunk.blockIndex, hit.chunk.blockIndex + 1};
             if (hit.chunk.imagePath.isEmpty()) {
                 // Include neighbouring paragraphs, while retaining the matched text even
                 // when a chunk straddles two paragraphs or comes from older stored data.
                 const int index = hit.chunk.blockIndex;
                 for (int i = std::max(0, index - 1); index >= 0 && i <= index + 2 && i < static_cast<int>(document->blocks.size()); ++i) {
                     const auto& block = document->blocks[i];
-                    if (block.type == DocumentBlockType::Text && block.text.size() <= 1500 && !text.contains(block.text))
+                    if (block.type == DocumentBlockType::Text && block.text.size() <= 1500 && !text.contains(block.text)) {
                         text += "\n\n" + block.text;
+                        range.first = std::min(range.first, i); range.last = std::max(range.last, i + 1);
+                    }
                 }
             }
-            result.push_back({text, hit.chunk.imagePath, text.left(1600), key, false});
+            auto origin = location(*document, range);
+            // Legacy chunks can have a page without a block index.
+            if (origin.value("pageFirst").toInt() == 0 && hit.chunk.pageNumber > 0) {
+                origin["pageFirst"] = hit.chunk.pageNumber; origin["pageLast"] = hit.chunk.pageNumber;
+            }
+            result.push_back({text, hit.chunk.imagePath, text.left(1600), key, false, false, origin});
         }
         if (included.size() >= 8) break;
     }
