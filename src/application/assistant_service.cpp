@@ -178,7 +178,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
                 if (!attachedDocumentIds_.isEmpty()) {
                     for (const auto& id : attachedDocumentIds_) {
                         const QStringList scope{id};
-                        const auto result = vectorStore_.search(embedding, 4, scope);
+                        const auto result = vectorStore_.searchHybrid(pendingQuestion_, embedding, 4, scope);
                         auto fileSources = DocumentContext::collect(pendingQuestion_, documents, result, scope);
                         if (fileSources.empty()) throw std::invalid_argument("Attached document has no searchable content");
                         const auto firstGroup = fileSources.front().groupId;
@@ -187,7 +187,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
                     }
                 } else {
                     const auto scope = DocumentContext::namedDocuments(pendingQuestion_, documents);
-                    const auto result = vectorStore_.search(embedding, 12, scope);
+                    const auto result = vectorStore_.searchHybrid(pendingQuestion_, embedding, 12, scope);
                     emit retrievalReady(result);
                     sources = DocumentContext::collect(pendingQuestion_, documents, result, scope);
                 }

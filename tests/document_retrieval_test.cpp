@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
         QObject::connect(&embedding,&EmbeddingClient::errorOccurred,[&](const QString& failure) { error=failure; done=true; loop.quit(); });
         embedding.requestEmbedding(question); timeout.start(60000); loop.exec();
         require(done && error.isEmpty() && !vector.empty(), qPrintable("Embedding failed: " + error));
-        const auto hits = index.search(vector,12,scope);
+        const auto hits = index.searchHybrid(question,vector,12,scope);
         GenerationRequest request; request.question = question;
         request.sources = DocumentContext::collect(question,documents,hits,scope);
         QSettings settings("local-assistant.ini",QSettings::IniFormat);

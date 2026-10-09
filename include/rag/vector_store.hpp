@@ -2,6 +2,8 @@
 
 #include "chunk.h"
 #include <QStringList>
+#include <QHash>
+#include <QSet>
 
 #include <vector>
 
@@ -19,12 +21,24 @@ namespace VectorStore {
     };
 
     class InMemoryVectorStore final {
-        std::vector<Entry> entries;
+        struct IndexedEntry {
+            Entry value;
+            QHash<QString, int> terms;
+            QSet<QString> tokens;
+            QString normalizedText;
+            int termCount = 0;
+        };
+        std::vector<IndexedEntry> entries;
+        static IndexedEntry indexEntry(Entry entry);
     public:
         void add(const Entry& entry);
 
         std::vector<SearchResult> search(const std::vector<double> &queryEmbedding, std::size_t topK,
                                          const QStringList& documentIds = {}) const;
+
+        // RRF/BM25 score is a ranking value, not a cosine similarity or probability.
+        std::vector<SearchResult> searchHybrid(const QString& query, const std::vector<double>& queryEmbedding,
+                                               std::size_t topK, const QStringList& documentIds = {}) const;
 
         void removeDocument(const QString& documentId);
         void replaceDocument(const QString& documentId, std::vector<Entry> replacement);
