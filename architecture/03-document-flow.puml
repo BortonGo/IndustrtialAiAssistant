@@ -1,46 +1,49 @@
 @startuml
 !include theme.iuml
-title Документы чата — обработка, атомарная запись, восстановление
+title Фоновый импорт — текст до изображений, пауза и возобновление
 autonumber
 hide footbox
 actor Пользователь as User
 participant AssistantService as Service
-participant DocumentManager as Docs
+participant DocumentImportQueue as Queue
 participant "DocumentExtractor / Python" as Extract
-participant "EmbeddingGemma" as Embedding
+participant EmbeddingGemma as Embedding
 participant "StorageClient / Repository" as Storage
 database PostgreSQL as DB
-participant "Индекс в RAM" as Index
-User -> Service : загрузить файл в открытый чат
-Service -> Service : закрепить chatId и рабочий индекс задачи
-Service -> Docs : loadFile(path)
-Docs -> Extract : текст / таблицы / изображения
-Extract --> Docs : блоки, текст, предупреждения
-Docs --> Service : documentIndexingRequested(UUID)
-Service -> Embedding : пакеты чанков
-Embedding --> Service : векторы
-Service -> Index : временный набор / вопросы заблокированы
-Service -> Storage : save_document(chatId, document, entries)
-Storage -> Storage : скопировать картинки в постоянное хранилище
-Storage -> DB : BEGIN; документ + блоки + чанки; COMMIT
-alt commit успешен
- Storage --> Service : сохранено
- Service -> Docs : Ready / ReadyWithWarnings
-else ошибка
- Storage --> Service : ошибка / ROLLBACK
- Service -> Index : удалить временный набор
- Service -> Docs : Error
+User -> Service : добавить файл через «Документы»
+Service -> Queue : enqueue(chatId, path)
+Queue -> Storage : enqueue_import / start_import
+Storage -> DB : сохранить задание и идентичность файла
+opt новый документ без готовой версии
+ Queue -> Extract : --native-only / исходный разбор в кэш
+ Extract --> Queue : текст, таблицы, число изображений
+ alt есть текст
+  Queue -> Embedding : пакеты native-текста
+  Queue -> Storage : checkpoint_import / save_document
+  Storage -> DB : транзакция: TextReady + индекс, native_done=true
+  Queue -> Service : documentSaved → обновить поиск и список
+ else только фото / сканы
+  Queue -> Storage : advance_import (без пустого документа)
+ end
 end
-User -> Service : открыть другой чат / перезапуск
-Service -> Storage : load_chat(chatId)
-Storage -> DB : только документы и совместимые векторы этого чата
-DB --> Storage
-Storage --> Service : документы и готовые embeddings
-Service -> Docs : заменить отображаемый список
-Service -> Index : заменить индекс выбранного чата
-note over Service,Index
- Перезапуск не требует повторного распознавания.
- При смене модели или версии обработки нужна переиндексация.
- Переход доступен во время обработки; рабочие данные задачи не меняются.
+Queue -> Extract : исходный разбор из кэша → распознавание картинок
+opt пользователь задаёт вопрос
+ Service -> Queue : приостановить импорт
+ Queue -> Storage : сохранить состояние очереди
+ Queue --> Service : idle
+ Service -> Storage : load_chat → текст уже доступен
+ Service -> Service : ответ с маркером неполного охвата источника
+ Service -> Queue : продолжить после ответа
+ Queue -> Extract : продолжить с кэшированными описаниями
+end
+Extract --> Queue : полный набор блоков
+Queue -> Embedding : только новые / изменившиеся чанки
+Queue -> Storage : save_document с полным индексом
+Storage -> DB : атомарно заменить версию, завершить задание
+Queue -> Service : documentSaved → обновить поиск и список
+note over Queue,DB
+ При паузе / ошибке / перезапуске опубликованный текст остаётся доступен.
+ При переиндексации прежняя версия сохраняется до полного COMMIT.
+ Вложения сообщения обрабатываются целиком перед ответом.
 end note
 @enduml

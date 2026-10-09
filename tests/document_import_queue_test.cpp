@@ -42,8 +42,8 @@ int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName("ImportQueueTests");
     const QDir root(QDir::current());
-    QDir().mkpath("build-import-queue");
-    QTemporaryDir data(root.filePath("build-import-queue/qt-XXXXXX"));
+    QDir().mkpath("build-qtcreator/test-artifacts/imports");
+    QTemporaryDir data(root.filePath("build-qtcreator/test-artifacts/imports/qt-XXXXXX"));
     if (!data.isValid()) return 2;
     qputenv("LOCAL_ASSISTANT_STORAGE_DIR", (data.path() + "/db").toLocal8Bit());
     qputenv("LOCAL_ASSISTANT_STORAGE_PORT", "55435");
@@ -135,9 +135,70 @@ int main(int argc, char** argv) {
         queue->control(secondId, "cancelled"); waitFor([&]() { return queue->jobs().isEmpty(); });
         require(QFileInfo::exists(second), "Cancel deleted the original source");
         require(failure.isEmpty(), qPrintable(failure));
+        // A native preview is queryable before vision, survives restart, and reuses embeddings.
+        const auto previewPath = data.path()+"/preview.docx", imagePath = data.path()+"/image.png";
+        write(previewPath, "preview source"); write(imagePath, "image fixture");
+        const QByteArray previewWorker =
+            "import json,sys,time,pathlib\nsys.stdout.reconfigure(encoding='utf-8')\n"
+            "native='--native-only' in sys.argv\n"
+            "root=pathlib.Path(sys.argv[1]).parent\n"
+            "if native and (root/'forbid-native').exists(): raise RuntimeError('native stage repeated')\n"
+            "text='Native PUMP-417 pressure 7.5 bar. '*80\n"
+            "blocks=[{'type':'text','text':text,'pageNumber':1}]\n"
+            "result={'text':text,'blocks':blocks,'warnings':[],'pendingImages':1 if native else 0}\n"
+            "if not native:\n"
+            " time.sleep(0.2)\n"
+            " blocks.append({'type':'image','text':'Recognized label','pageNumber':2,'imagePath':str(root/'image.png')})\n"
+            " result['text']+='\\n'+chr(91)+'Описание изображения моделью; возможны ошибки'+chr(93)+'\\nRecognized label'\n"
+            "print(json.dumps(result,ensure_ascii=False))\n";
+        write(worker, previewWorker);
+        int publications = 0;
+        auto previewConnection = QObject::connect(queue.get(), &DocumentImportQueue::documentSaved, [&](const QString&, const QString& file) {
+            if (file != "preview.docx") return;
+            ++publications;
+            if (publications == 1) queue->control(job(*queue, previewPath).value("id").toString(), "paused");
+        });
+        queue->enqueue(b, previewPath);
+        waitFor([&]() { return publications == 1 && queue->isIdle(); });
+        const auto previewJob = job(*queue, previewPath).value("id").toString();
+        const auto native = request(storage, "load_chat", {{"chatId",b},{"remember",false}});
+        require(native.value("documents").toArray().size() == 1, "Preview missing");
+        require(native.value("documents").toArray()[0].toObject().value("status").toString() == "TextReady", "Preview reported complete");
+        const int embeddedBeforeVision = embedded;
         queue->stop(); queue.reset();
         storage.stop(); waitFor([&]() { return storage.isStopped(); });
-        qInfo() << "Import queue: preemption, durable pause, restart, checkpoint resume, deduplication, chat isolation, changed file and cancel passed";
+        write(data.path()+"/forbid-native", "");
+        queue.reset(new DocumentImportQueue(&storage, config, model));
+        storage.start(); waitFor([&]() { return storage.isReady() && queue->jobs().size() == 1; });
+        queue->setModelsReady(true); queue->control(previewJob, "queued");
+        waitFor([&]() { return queue->jobs().isEmpty() && queue->isIdle(); });
+        const auto full = request(storage, "load_chat", {{"chatId",b},{"remember",false}});
+        const auto fullDoc = full.value("documents").toArray()[0].toObject();
+        require(full.value("documents").toArray().size() == 1 && fullDoc.value("status").toString() == "Ready", "Full import did not replace preview");
+        require(fullDoc.value("pendingImages").toInt() == 0 && fullDoc.value("blocks").toArray().size() == 2, "Recognized image missing");
+        require(embedded - embeddedBeforeVision == 1, "Vision pass recalculated native text embeddings");
+        // No empty document should appear for a standalone photo / scan-only PDF.
+        const auto scanChat = uuid(), scanPath = data.path()+"/scan.png";
+        request(storage, "create_chat", {{"id",scanChat},{"title","Scan"}});
+        write(scanPath, "scan source");
+        write(worker,
+            "import sys,json,time\nsys.stdout.reconfigure(encoding='utf-8')\n"
+            "if '--native-only' in sys.argv:\n"
+            " print(json.dumps({'text':'','blocks':[],'warnings':[],'pendingImages':1}))\n"
+            "else:\n"
+            " print('@@DOCUMENT@@'+json.dumps({'message':'Scan vision pending'}),file=sys.stderr,flush=True)\n"
+            " time.sleep(0.4)\n"
+            " print(json.dumps({'text':'Read scan','blocks':[{'type':'text','text':'Read scan'}],'warnings':[]}))\n");
+        queue->enqueue(scanChat, scanPath);
+        waitFor([&]() { return job(*queue, scanPath).value("progress").toString() == "Scan vision pending"; });
+        require(request(storage, "load_chat", {{"chatId",scanChat},{"remember",false}}).value("documents").toArray().isEmpty(),
+                "Empty scan preview was published");
+        waitFor([&]() { return queue->jobs().isEmpty() && queue->isIdle(); });
+        require(request(storage, "load_chat", {{"chatId",scanChat},{"remember",false}}).value("documents").toArray().size() == 1,
+                "Scan-only import failed after empty native pass");
+        queue->stop(); queue.reset();
+        storage.stop(); waitFor([&]() { return storage.isStopped(); });
+        qInfo() << "Import queue: preemption, durable pause, restart, preview publication, embedding reuse, deduplication, isolation and cancel passed";
         return 0;
     } catch (const std::exception& error) {
         qCritical() << error.what(); storage.stop(); waitFor([&]() { return storage.isStopped(); }); return 1;

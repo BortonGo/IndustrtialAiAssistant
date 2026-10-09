@@ -6,9 +6,15 @@
 #include <algorithm>
 #include <stdexcept>
 
+namespace {
+DocumentExtractionConfig nativeConfig(DocumentExtractionConfig config) {
+    config.nativeOnly = true; config.resumeExtraction = true; return config;
+}
+}
+
 DocumentImportQueue::DocumentImportQueue(StorageClient* storage, const DocumentExtractionConfig& config,
                                        const ModelApiConfig& embeddings, QObject* parent)
-    : QObject(parent), storage_(storage), reader_(config), embeddings_(embeddings), maxFileSize_(config.maxFileSize) {
+    : QObject(parent), storage_(storage), reader_(config), nativeReader_(nativeConfig(config)), embeddings_(embeddings), maxFileSize_(config.maxFileSize) {
     connect(storage_, &StorageClient::ready, this, &DocumentImportQueue::refresh);
     progressTimer_.setSingleShot(true); progressTimer_.setInterval(750);
     connect(&progressTimer_, &QTimer::timeout, this, [this]() {
@@ -17,6 +23,23 @@ DocumentImportQueue::DocumentImportQueue(StorageClient* storage, const DocumentE
                           [this](const QJsonObject&, const QString& error) { if (!error.isEmpty() && !stopping_) emit logMessage(error); });
     });
     connect(&reader_, &DocumentLoader::progressChanged, this, &DocumentImportQueue::progress);
+    connect(&nativeReader_, &DocumentLoader::progressChanged, this, &DocumentImportQueue::progress);
+    connect(&nativeReader_, &DocumentLoader::documentReady, this, [this](const Document& document) {
+        if (phase_ != Phase::Reading || !readingNative_) return;
+        if (!stopStatus_.isEmpty()) { finish(stopStatus_); return; }
+        if (!document.text.trimmed().isEmpty()) { acceptDocument(document); return; }
+        // Scan-only files have no searchable preview. Continue directly to vision.
+        phase_ = Phase::Checkpoint;
+        storage_->request("advance_import", {{"id",current_["id"]}}, [this](const QJsonObject&, const QString& error) {
+            if (stopping_) return;
+            if (!error.isEmpty()) { finish("failed", error); return; }
+            current_["nativeDone"] = true; readNext();
+        });
+    });
+    connect(&nativeReader_, &DocumentLoader::errorOccurred, this, [this](const QString& error) {
+        if (phase_ != Phase::Reading || !readingNative_) return;
+        finish(stopStatus_.isEmpty() ? "failed" : stopStatus_, stopStatus_.isEmpty() ? error : QString());
+    });
     connect(&reader_, &DocumentLoader::documentReady, this, [this](const Document& document) {
         if (phase_ != Phase::Reading) return;
         if (!stopStatus_.isEmpty()) { finish(stopStatus_); return; }
@@ -41,15 +64,7 @@ DocumentImportQueue::DocumentImportQueue(StorageClient* storage, const DocumentE
                 validation.add(entry); batch.append(entryToJson(entry));
             }
         } catch (const std::exception& error) { finish("failed", QString::fromUtf8(error.what())); return; }
-        phase_ = Phase::Checkpoint;
-        const auto text = QStringLiteral("Индексация: %1/%2 фрагментов").arg(entries_.size() + batch.size()).arg(chunks_.size());
-        storage_->request("checkpoint_import", {{"id",current_["id"]},{"entries",batch},{"offset",entries_.size()},{"progress",text}},
-            [this,batch,text](const QJsonObject&, const QString& error) {
-            if (stopping_) return;
-            if (!error.isEmpty()) { finish("failed", error); return; }
-            for (const auto& entry : batch) entries_.append(entry);
-            progress(text); nextBatch();
-        });
+        saveBatch(batch);
     });
 }
 
@@ -129,6 +144,12 @@ void DocumentImportQueue::pump() {
             if (stopping_) return;
             if (!error.isEmpty()) { emit logMessage(error); release(); refresh(); return; }
             current_ = data.value("job").toObject();
+            for (const auto& value : data.value("reusableEntries").toArray()) {
+                const auto saved = value.toObject();
+                std::vector<double> vector;
+                for (const auto& x : saved.value("embedding").toArray()) vector.push_back(x.toDouble());
+                reusable_.insert(saved.value("text").toString(), vector);
+            }
             const auto checkpoint = current_.take("checkpoint").toObject(); publish(current_);
             if (current_.value("status").toString() != "running") { release(); return; }
             if (!stopStatus_.isEmpty()) { finish(stopStatus_); return; }
@@ -141,11 +162,30 @@ void DocumentImportQueue::pump() {
                     if (imagesExist) { acceptDocument(document, checkpoint.value("entries").toArray(), true); return; }
                 } catch (const std::exception& error) { emit logMessage(QString::fromUtf8(error.what())); }
             }
-            phase_ = Phase::Reading; progress(QStringLiteral("Чтение документа…"));
-            reader_.loadFile(current_.value("sourcePath").toString());
+            readNext();
         });
         return;
     }
+}
+
+void DocumentImportQueue::readNext() {
+    if (!stopStatus_.isEmpty()) { finish(stopStatus_); return; }
+    readingNative_ = !current_.value("nativeDone").toBool();
+    phase_ = Phase::Reading;
+    progress(readingNative_ ? QStringLiteral("Чтение текста и таблиц…") : QStringLiteral("Распознавание изображений…"));
+    (readingNative_ ? nativeReader_ : reader_).loadFile(current_.value("sourcePath").toString());
+}
+
+void DocumentImportQueue::saveBatch(const QJsonArray& batch) {
+    phase_ = Phase::Checkpoint;
+    const auto text = QStringLiteral("Индексация: %1/%2 фрагментов").arg(entries_.size() + batch.size()).arg(chunks_.size());
+    storage_->request("checkpoint_import", {{"id",current_["id"]},{"entries",batch},{"offset",entries_.size()},{"progress",text}},
+        [this,batch,text](const QJsonObject&, const QString& error) {
+        if (stopping_) return;
+        if (!error.isEmpty()) { finish("failed", error); return; }
+        for (const auto& entry : batch) entries_.append(entry);
+        progress(text); nextBatch();
+    });
 }
 
 void DocumentImportQueue::acceptDocument(const Document& document, const QJsonArray& entries, bool restored) {
@@ -180,18 +220,42 @@ void DocumentImportQueue::nextBatch() {
         const auto chatId = activeChatId(), file = QFileInfo(document_.sourcePath).fileName();
         storage_->request("save_document", {{"importId",current_["id"]},{"chatId",chatId},
                           {"document",documentToJson(document_)},{"entries",entries_}},
-            [this,chatId,file](const QJsonObject&, const QString& error) {
+            [this,chatId,file](const QJsonObject& data, const QString& error) {
             if (stopping_) return;
             if (!error.isEmpty()) { finish("failed", error); return; }
-            current_["status"] = "complete"; publish(current_);
-            emit documentSaved(chatId, file); release();
+            current_["documentId"] = data.value("documentId");
+            if (document_.pendingImages > 0) {
+                for (const auto& value : entries_) {
+                    const auto entry = entryFromJson(value.toObject());
+                    reusable_.insert(entry.chunk.text, entry.embedding);
+                }
+                current_["nativeDone"] = true;
+                if (data.value("published").toBool()) emit documentSaved(chatId, file);
+                entries_ = {}; chunks_.clear(); document_ = {};
+                readNext();
+            } else {
+                current_["status"] = "complete"; publish(current_);
+                emit documentSaved(chatId, file); release();
+            }
         });
         return;
     }
     phase_ = Phase::Indexing;
     batchSize_ = std::min<std::size_t>(16, chunks_.size() - entries_.size());
+    QJsonArray reused;
+    while (static_cast<std::size_t>(reused.size()) < batchSize_) {
+        const auto& chunk = chunks_[entries_.size() + reused.size()];
+        if (!reusable_.contains(chunk.text)) break;
+        reused.append(entryToJson({chunk, reusable_.value(chunk.text)}));
+    }
+    if (!reused.isEmpty()) { saveBatch(reused); return; }
     QStringList texts;
-    for (std::size_t i = 0; i < batchSize_; ++i) texts.append(chunks_[entries_.size() + i].text);
+    for (std::size_t i = 0; i < batchSize_; ++i) {
+        const auto& text = chunks_[entries_.size() + i].text;
+        if (reusable_.contains(text)) break;
+        texts.append(text);
+    }
+    batchSize_ = texts.size();
     progress(QStringLiteral("Индексация: %1/%2 фрагментов").arg(entries_.size()).arg(chunks_.size()));
     embeddings_.requestEmbeddings(texts);
 }
@@ -208,7 +272,7 @@ void DocumentImportQueue::interrupt(const QString& status) {
     // An explicit pause/cancel must survive a later foreground preemption.
     if (stopStatus_.isEmpty() || status == "cancelled" || (status == "paused" && stopStatus_ == "queued")) stopStatus_ = status;
     progressTimer_.stop();
-    if (phase_ == Phase::Reading) reader_.cancel();
+    if (phase_ == Phase::Reading) (readingNative_ ? nativeReader_ : reader_).cancel();
     else if (phase_ == Phase::Indexing) { embeddings_.cancelRequests(); finish(stopStatus_); }
     // DB transactions/checkpoints finish first; their callbacks honour stopStatus_.
 }
@@ -234,12 +298,13 @@ void DocumentImportQueue::finish(const QString& status, const QString& error) {
 
 void DocumentImportQueue::release() {
     phase_ = Phase::Idle; current_ = {}; document_ = {}; chunks_.clear(); entries_ = {}; stopStatus_.clear();
+    reusable_.clear();
     progressTimer_.stop(); emit changed(); emit idle();
     QTimer::singleShot(0, this, [this]() { pump(); });
 }
 
 void DocumentImportQueue::stop() {
     if (stopping_) return;
-    stopping_ = true; progressTimer_.stop(); embeddings_.cancelRequests(); reader_.cancel();
+    stopping_ = true; progressTimer_.stop(); embeddings_.cancelRequests(); reader_.cancel(); nativeReader_.cancel();
     // A running row is recovered as paused on startup, even after a forced termination.
 }

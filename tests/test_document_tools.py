@@ -77,8 +77,8 @@ def make_pdf(path, picture, rotate=0, native=True):
 
 class ExtractionTests(unittest.TestCase):
     def setUp(self):
-        (ROOT / "build-document-check").mkdir(exist_ok=True)
-        self.tmp = tempfile.TemporaryDirectory(dir=ROOT / "build-document-check")
+        (ROOT / "build-qtcreator/test-artifacts/documents").mkdir(parents=True, exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(dir=ROOT / "build-qtcreator/test-artifacts/documents")
         self.work = Path(self.tmp.name)
         self.picture = self.work / "plate.png"
         make_picture(self.picture)
@@ -262,7 +262,7 @@ class ExtractionTests(unittest.TestCase):
 
 class ParallelImageTests(unittest.TestCase):
     def setUp(self):
-        (ROOT / "build-document-check").mkdir(exist_ok=True)
+        (ROOT / "build-qtcreator/test-artifacts/documents").mkdir(parents=True, exist_ok=True)
 
     def test_parallel_workers_deduplicate_preserve_order_and_keep_partial_success(self):
         lock = threading.Lock()
@@ -344,7 +344,7 @@ class ParallelImageTests(unittest.TestCase):
             def log_message(self, *args):
                 pass
 
-        with tempfile.TemporaryDirectory(dir=ROOT / "build-document-check") as directory:
+        with tempfile.TemporaryDirectory(dir=ROOT / "build-qtcreator/test-artifacts/documents") as directory:
             work = Path(directory)
             paths = [work / "one.png", work / "two.png"]
             for path in paths:

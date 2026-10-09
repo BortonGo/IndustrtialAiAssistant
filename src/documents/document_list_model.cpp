@@ -53,7 +53,7 @@ QVariant DocumentListModel::data(const QModelIndex& index, int role) const {
     } else if (role == Qt::UserRole) {
         return document->id;
     } else if (role == Qt::ToolTipRole) {
-        return document->sourcePath + (document->warnings.isEmpty() ? QString() :
+        return document->sourcePath + (document->pendingImages ? QStringLiteral("\nТекст доступен для вопросов. Не распознано изображений: %1").arg(document->pendingImages) : QString()) + (document->warnings.isEmpty() ? QString() :
                                       "\n" + document->warnings.join("\n"));
     }
     return {};

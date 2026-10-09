@@ -34,8 +34,8 @@ def response(text, finish="stop", done=True, chunk_size=13):
 
 class ImageStreamTests(unittest.TestCase):
     def setUp(self):
-        (ROOT / "build-document-check").mkdir(exist_ok=True)
-        self.tmp = tempfile.TemporaryDirectory(dir=ROOT / "build-document-check")
+        (ROOT / "build-qtcreator/test-artifacts/documents").mkdir(parents=True, exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(dir=ROOT / "build-qtcreator/test-artifacts/documents")
         self.addCleanup(self.tmp.cleanup)
         self.work = Path(self.tmp.name)
         self.picture = self.work / "image.png"

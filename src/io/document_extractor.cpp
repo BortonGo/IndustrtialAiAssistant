@@ -63,7 +63,7 @@ DocumentExtractor::DocumentExtractor(const DocumentExtractionConfig& config, QOb
         }
         Document document;
         QString error;
-        if (!parseDocumentContent(output_, document, error)) { emit errorOccurred(error); return; }
+        if (!parseDocumentContent(output_, document, error, true, config_.nativeOnly)) { emit errorOccurred(error); return; }
         output_.clear();
         emit contentReady(document);
     });
@@ -148,6 +148,7 @@ void DocumentExtractor::extract(const QString& path)
     args << "-u" << config_.scriptPath << path << "--images-dir" << QDir(cache).filePath("document-images")
          << "--poppler-dir" << config_.popplerDirectory;
     if (config_.resumeExtraction) args << "--checkpoint-dir" << QDir(cache).filePath("document-extraction");
+    if (config_.nativeOnly) args << "--native-only";
     if (!config_.visionUrl.isEmpty()) args << "--vision-url" << config_.visionUrl
                                         << "--vision-profile" << config_.visionProfile
                                         << "--vision-parallel-requests" << QString::number(config_.visionParallelRequests);

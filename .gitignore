@@ -11,6 +11,7 @@ CMakeLists.txt.user*
 /cmake-build-*/
 /build/
 /build-*/
+/dist/
 /debug/
 /release/
 
@@ -62,6 +63,7 @@ __pycache__/
 # Local model runtime and weights
 /tools/llama-cpp/
 /tools/postgresql/
+/tools/offline-wheels/
 /storage-data/
 /storage_tools/local.json
 *.gguf

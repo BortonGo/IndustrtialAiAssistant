@@ -225,6 +225,9 @@ class Repository:
     def save_document(self, params):
         document = params['document']
         entries = params['entries']
+        pending = document.get('pendingImages', 0)
+        if type(pending) is not int or pending < 0 or (pending and not params.get('importId')):
+            raise ValueError('Некорректный предварительный документ')
         if not document['text'].strip() or not entries:
             raise ValueError("Нельзя сохранить пустой документ или частичный индекс")
         for entry in entries:
@@ -260,6 +263,11 @@ class Repository:
             if owner and str(owner['chat_id']) != params['chatId']:
                 raise ValueError('Документ принадлежит другому чату')
             previous = self.connection.execute("SELECT id FROM documents WHERE chat_id=%s AND source_key=%s", (params['chatId'], source_key)).fetchone()
+            if pending and previous:
+                # A completed version (or a foreground attachment) must never regress to a preview.
+                self.connection.execute('UPDATE document_imports SET document_id=%s WHERE id=%s', (previous['id'], params['importId']))
+                self.advance_import({'id': params['importId']})
+                return {'published': False, 'documentId': str(previous['id'])}
             if params.get('importId') and previous and str(previous['id']) != document['id']:
                 # A foreground attachment may have imported this file while the job was paused.
                 # Keep its ID so existing message attachments retain their document reference.
@@ -272,9 +280,9 @@ class Repository:
             if previous and str(previous['id']) == document['id']:
                 self.connection.execute('DELETE FROM document_blocks WHERE document_id=%s', (document['id'],))
                 self.connection.execute('DELETE FROM chunks WHERE document_id=%s', (document['id'],))
-            self.connection.execute("INSERT INTO documents(id,chat_id,source_path,source_key,content_sha256,extracted_text,warnings,pipeline_version) VALUES(%s,%s,%s,%s,%s,%s,%s,%s) "
-                                    "ON CONFLICT(id) DO UPDATE SET source_path=excluded.source_path,source_key=excluded.source_key,content_sha256=excluded.content_sha256,extracted_text=excluded.extracted_text,warnings=excluded.warnings,pipeline_version=excluded.pipeline_version WHERE documents.chat_id=excluded.chat_id",
-                                    (document['id'], params['chatId'], source, source_key, source_hash, document['text'], Jsonb(document['warnings']), PIPELINE_VERSION))
+            self.connection.execute("INSERT INTO documents(id,chat_id,source_path,source_key,content_sha256,extracted_text,warnings,pipeline_version,pending_images) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                                    "ON CONFLICT(id) DO UPDATE SET source_path=excluded.source_path,source_key=excluded.source_key,content_sha256=excluded.content_sha256,extracted_text=excluded.extracted_text,warnings=excluded.warnings,pipeline_version=excluded.pipeline_version,pending_images=excluded.pending_images WHERE documents.chat_id=excluded.chat_id",
+                                    (document['id'], params['chatId'], source, source_key, source_hash, document['text'], Jsonb(document['warnings']), PIPELINE_VERSION, pending))
             with self.connection.cursor() as cursor:
                 cursor.executemany("INSERT INTO document_blocks VALUES(%s,%s,%s,%s)",
                                    [(document['id'], i, b['type'], Jsonb(b)) for i, b in enumerate(document['blocks'])])
@@ -286,14 +294,26 @@ class Repository:
                     rows.append((document['id'], i, metadata.pop('text'), metadata.pop('startOffset'), Jsonb(metadata), self.profile, entry['embedding']))
                 cursor.executemany("INSERT INTO chunks VALUES(%s,%s,%s,%s,%s,%s,%s)", rows)
             if params.get('importId'):
-                self.connection.execute("UPDATE document_imports SET status='complete', progress='Готов к поиску', error='', checkpoint='{}', updated_at=now() WHERE id=%s", (params['importId'],))
-                self.connection.execute('DELETE FROM document_import_chunks WHERE import_id=%s', (params['importId'],))
+                if pending:
+                    self.advance_import({'id': params['importId']})
+                else:
+                    self.connection.execute("UPDATE document_imports SET status='complete', progress='Готов к поиску', error='', checkpoint='{}', updated_at=now() WHERE id=%s", (params['importId'],))
+                    self.connection.execute('DELETE FROM document_import_chunks WHERE import_id=%s', (params['importId'],))
+        return {'published': True, 'documentId': document['id']}
+
+    def advance_import(self, params):
+        with self.connection.transaction():
+            row = self.connection.execute("SELECT * FROM document_imports WHERE id=%s AND status='running' FOR UPDATE", (params['id'],)).fetchone()
+            if not row or row['profile_id'] != self.profile or sha256(row['source_path']) != row['source_sha256']:
+                raise ValueError('Задание или исходный файл изменились')
+            self.connection.execute("UPDATE document_imports SET native_done=true,checkpoint='{}',updated_at=now() WHERE id=%s", (row['id'],))
+            self.connection.execute('DELETE FROM document_import_chunks WHERE import_id=%s', (row['id'],))
         return {}
 
     @staticmethod
     def import_json(row, checkpoint=False):
         result = {'id': str(row['id']), 'chatId': str(row['chat_id']), 'documentId': str(row['document_id']),
-                  'sourcePath': row['source_path'], 'status': row['status'], 'progress': row['progress'], 'error': row['error']}
+                  'sourcePath': row['source_path'], 'status': row['status'], 'progress': row['progress'], 'error': row['error'], 'nativeDone': row['native_done']}
         if checkpoint:
             result['checkpoint'] = row['checkpoint']
         return result
@@ -316,7 +336,7 @@ class Repository:
 
     def list_imports(self, params):
         return {'jobs': [self.import_json(row) for row in self.connection.execute(
-            "SELECT id,chat_id,document_id,source_path,status,progress,error FROM document_imports WHERE status NOT IN ('complete','cancelled') ORDER BY created_at,id")]}
+            "SELECT id,chat_id,document_id,source_path,status,progress,error,native_done FROM document_imports WHERE status NOT IN ('complete','cancelled') ORDER BY created_at,id")]}
 
     def start_import(self, params):
         with self.connection.transaction():
@@ -334,7 +354,16 @@ class Repository:
             row = self.connection.execute("UPDATE document_imports SET status='running',error='',profile_id=%s,checkpoint=CASE WHEN profile_id=%s THEN checkpoint ELSE '{}'::jsonb END,updated_at=now() WHERE id=%s RETURNING *", (self.profile, self.profile, row['id'])).fetchone()
             if row['checkpoint']:
                 row['checkpoint']['entries'] = [r['payload'] for r in self.connection.execute('SELECT payload FROM document_import_chunks WHERE import_id=%s ORDER BY position', (row['id'],))]
-            return {'job': self.import_json(row, True)}
+            # Reuse text embeddings even if image insertion changes offsets/block numbers.
+            # Keep a previous published version available throughout reindexing.
+            existing = self.connection.execute('SELECT id FROM documents WHERE chat_id=%s AND source_key=%s', (row['chat_id'], row['source_key'])).fetchone()
+            reusable = []
+            if existing:
+                reusable = [{'text': r['text'], 'embedding': r['embedding']} for r in self.connection.execute(
+                    'SELECT text,embedding FROM chunks WHERE document_id=%s AND profile_id=%s ORDER BY position', (existing['id'], self.profile))]
+                if not row['checkpoint']:
+                    row = self.connection.execute('UPDATE document_imports SET native_done=true WHERE id=%s RETURNING *', (row['id'],)).fetchone()
+            return {'job': self.import_json(row, True), 'reusableEntries': reusable}
 
     def update_import(self, params):
         transitions = {'queued': {'paused','cancelled'}, 'paused': {'queued','cancelled'},
@@ -385,7 +414,7 @@ class Repository:
                 raise ValueError("Чат не найден")
             result = {"documents": [], "entries": []}
             for row in self.connection.execute("SELECT * FROM documents WHERE chat_id=%s ORDER BY created_at,id", (params['chatId'],)):
-                document = {"id": str(row['id']), "sourcePath": row['source_path'], "text": row['extracted_text'], "warnings": row['warnings'], "blocks": []}
+                document = {"id": str(row['id']), "sourcePath": row['source_path'], "text": row['extracted_text'], "warnings": row['warnings'], "blocks": [], "pendingImages": row['pending_images']}
                 missing_images = []
                 for block in self.connection.execute("SELECT payload FROM document_blocks WHERE document_id=%s ORDER BY position", (row['id'],)):
                     payload = block['payload']
@@ -398,6 +427,8 @@ class Repository:
                 compatible = bool(chunks) and row['pipeline_version'] == PIPELINE_VERSION
                 usable = compatible and not missing_images
                 document['status'] = ('ReadyWithWarnings' if document['warnings'] else 'Ready') if usable else 'Error'
+                if usable and row['pending_images']:
+                    document['status'] = 'TextReady'
                 for image_path in dict.fromkeys(missing_images):
                     document['warnings'].append('Отсутствует сохранённое изображение: ' + image_path)
                 if not compatible:
@@ -416,7 +447,7 @@ class Repository:
 
     def dispatch(self, method, params):
         if method not in ('bootstrap', 'create_chat', 'delete_chat', 'select_chat', 'question_history', 'save_question', 'save_context', 'finish_question', 'save_document', 'load_chat', 'bind_attachment',
-                          'enqueue_import', 'list_imports', 'start_import', 'update_import', 'checkpoint_import'):
+                          'enqueue_import', 'list_imports', 'start_import', 'update_import', 'checkpoint_import', 'advance_import'):
             raise ValueError("Неизвестная операция хранилища")
         return getattr(self, method)(params)
 

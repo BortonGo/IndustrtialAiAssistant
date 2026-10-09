@@ -14,13 +14,14 @@ struct DocumentExtractionConfig {
     QString visionProfile;
     int visionParallelRequests = 1;
     bool resumeExtraction = false;
+    bool nativeOnly = false;
     QString sofficePath;
     qint64 maxFileSize = 100 * 1024 * 1024;
     int inactivityTimeoutMs = 360000;
 };
 
 // Fresh extraction requires files; storage restoration can retain a broken document for diagnostics.
-bool parseDocumentContent(const QByteArray& json, Document& document, QString& error, bool requireImageFiles = true);
+bool parseDocumentContent(const QByteArray& json, Document& document, QString& error, bool requireImageFiles = true, bool allowEmptyPreview = false);
 
 class DocumentExtractor final : public QObject {
     Q_OBJECT

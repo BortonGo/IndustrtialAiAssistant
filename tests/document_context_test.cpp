@@ -121,6 +121,14 @@ int main(int argc, char** argv) {
         require(!DocumentContext::collect(question, {&other}, {}, {"target"}).size(), "Document from outside the origin chat was included");
         other.status = DocumentStatus::Error;
         require(DocumentContext::namedDocuments(other.sourcePath, {&other}).isEmpty(), "Failed document was treated as ready");
+        document.status = DocumentStatus::TextReady; document.pendingImages = 12;
+        const auto preview = DocumentContext::collect(question, {&document}, hits, scope);
+        require(!preview.empty() && preview[0].text.contains(QStringLiteral("12 изображений ещё не распознано")),
+                "Searchable preview lost its coverage warning");
+        auto plainPreview = document; plainPreview.blocks.clear();
+        const auto previewHit = DocumentContext::collect("details", {&plainPreview}, {{chunk, 1.0}}, {});
+        require(!previewHit.empty() && previewHit[0].text.contains(QStringLiteral("Содержимое этих изображений неизвестно")),
+                "Vector hit lost its preview warning");
         qInfo() << "Document scope, table expansion, notes, deduplication, grouping and chat isolation passed";
         return 0;
     } catch (const std::exception& error) { qCritical() << error.what(); return 1; }

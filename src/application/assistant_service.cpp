@@ -142,7 +142,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
     connect(imports_, &DocumentImportQueue::idle, this, &AssistantService::continuePendingQuestion);
     connect(imports_, &DocumentImportQueue::documentSaved, this, [this](const QString& chatId, const QString& file) {
         reloadImportedDocuments(chatId);
-        emit serverLogMessage(QStringLiteral("Импорт"), file + QStringLiteral(": сохранён и готов к поиску"));
+        emit serverLogMessage(QStringLiteral("Импорт"), file + QStringLiteral(": доступная часть сохранена для поиска"));
     });
     connect(this, &AssistantService::busyChanged, this, [this]() {
         imports_->setForegroundActive(state_ != AssistantState::Idle || busy_);

@@ -112,6 +112,16 @@ int main(int argc, char** argv) {
             }
         }
         auto bad = root;
+        auto preview = QJsonObject{{"text","Native text"},{"blocks",QJsonArray{QJsonObject{{"type","text"},{"text","Native text"}}}},
+            {"warnings",QJsonArray()},{"pendingImages",12},{"status","TextReady"}};
+        check(documentFromJson(preview).status == DocumentStatus::TextReady, "Preview status lost");
+        check(documentToJson(documentFromJson(preview)).value("pendingImages").toInt() == 12, "Preview count lost");
+        preview["pendingImages"] = 0.5;
+        check(!parseDocumentContent(QJsonDocument(preview).toJson(), document, error), "Fractional pending count accepted");
+        preview["pendingImages"] = 2; preview["text"] = ""; preview["blocks"] = QJsonArray();
+        check(!parseDocumentContent(QJsonDocument(preview).toJson(), document, error), "Empty saved document accepted");
+        check(parseDocumentContent(QJsonDocument(preview).toJson(), document, error, true, true), "Scan-only preview rejected");
+        check(parseDocumentContent(QJsonDocument(root).toJson(), document, error), "Fixture restore failed");
         bad["text"] = "mismatch";
         check(!parseDocumentContent(QJsonDocument(bad).toJson(), document, error), "must reject mismatched text");
         auto image = blocks[1].toObject(); image["pageNumber"] = 1.5;

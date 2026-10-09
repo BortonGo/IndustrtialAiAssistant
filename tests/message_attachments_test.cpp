@@ -34,8 +34,8 @@ int main(int argc, char** argv) {
         if (type != QtDebugMsg) std::fprintf(stderr, "%s\n", message.toUtf8().constData());
     });
     if (app.arguments().size() != 2) return 2;
-    QDir().mkpath("build-storage-check");
-    QTemporaryDir directory(QDir::current().filePath("build-storage-check/attachments-XXXXXX"));
+    QDir().mkpath("build-qtcreator/test-artifacts/storage");
+    QTemporaryDir directory(QDir::current().filePath("build-qtcreator/test-artifacts/storage/attachments-XXXXXX"));
     require(directory.isValid(), "No isolated directory");
     const QDir work(directory.path());
     qputenv("LOCAL_ASSISTANT_STORAGE_DIR", work.filePath("database").toUtf8());

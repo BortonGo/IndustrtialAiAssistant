@@ -19,7 +19,7 @@ DocumentManager::DocumentManager(const DocumentExtractionConfig& config, QObject
             }
         }
         if (auto* previous = find(document.id)) {
-            if (previous->status == DocumentStatus::Ready || previous->status == DocumentStatus::ReadyWithWarnings)
+            if (previous->status == DocumentStatus::Ready || previous->status == DocumentStatus::ReadyWithWarnings || previous->status == DocumentStatus::TextReady)
                 previousVersions_.insert(document.id, *previous);
             *previous = document;
             emit documentStatusChanged(document.id);

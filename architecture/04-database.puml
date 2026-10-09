@@ -1,6 +1,6 @@
 @startuml
 !include theme.iuml
-title PostgreSQL — реализованная схема (миграции 001–003)
+title PostgreSQL — реализованная схема (миграции 001–005)
 hide circle
 skinparam linetype ortho
 entity chats {
@@ -33,6 +33,7 @@ entity documents {
  extracted_text : text
  warnings : jsonb
  pipeline_version : text
+ pending_images : integer
  UNIQUE(chat_id, source_key)
 }
 entity document_blocks {
@@ -65,6 +66,21 @@ entity app_settings {
  * key : text <<PK>>
  value : text
 }
+entity document_imports {
+ * id : uuid <<PK>>
+ * chat_id : uuid <<FK>>
+ document_id : uuid
+ source_path / source_key / source_sha256 : text
+ profile_id : text <<FK>>
+ status / progress / error : text
+ checkpoint : jsonb
+ native_done : boolean
+}
+entity document_import_chunks {
+ * import_id : uuid <<PK, FK>>
+ * position : integer <<PK>>
+ payload : jsonb
+}
 chats ||--o{ messages
 chats ||--o{ documents
 messages ||--o{ message_attachments
@@ -73,6 +89,9 @@ messages |o--o| messages
 documents ||--o{ document_blocks
 documents ||--o{ chunks
 embedding_profiles ||--o{ chunks
+chats ||--o{ document_imports
+embedding_profiles ||--o{ document_imports
+document_imports ||--o{ document_import_chunks
 note bottom of messages
  Источники вопроса сохраняются снимком.
  Ответ связан с исходным вопросом.
@@ -81,7 +100,8 @@ note bottom of messages
  Ответ: complete или failed (сохранённый фрагмент при обрыве).
 end note
 note bottom of chunks
- Только полный индекс публикуется транзакционно.
+ Каждый этап публикуется транзакционно с полным индексом своей версии.
+ pending_images > 0: доступен текст, изображения ещё неизвестны.
  Поиск выполняется в RAM в пределах одного чата и профиля.
 end note
 @enduml

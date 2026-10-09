@@ -5,7 +5,7 @@
 #include <QFileInfo>
 #include <cmath>
 
-bool parseDocumentContent(const QByteArray& json, Document& document, QString& error, bool requireImageFiles)
+bool parseDocumentContent(const QByteArray& json, Document& document, QString& error, bool requireImageFiles, bool allowEmptyPreview)
 {
     auto fail = [&error](const QString& message) { error = message; return false; };
     QJsonParseError parseError;
@@ -16,6 +16,13 @@ bool parseDocumentContent(const QByteArray& json, Document& document, QString& e
     if (!root.value("text").isString() || !root.value("blocks").isArray() ||
         !root.value("warnings").isArray()) return fail("Expected text, blocks and warnings");
     Document result;
+    if (root.contains("pendingImages")) {
+        const auto value = root.value("pendingImages");
+        const auto number = value.toDouble(-1);
+        if (!value.isDouble() || number < 0 || number > 2147483647 || std::floor(number) != number)
+            return fail("Invalid pending image count");
+        result.pendingImages = static_cast<int>(number);
+    }
     result.text = root.value("text").toString();
     for (const auto& warning : root.value("warnings").toArray()) {
         if (!warning.isString()) return fail("Warning must be a string");
@@ -71,7 +78,7 @@ bool parseDocumentContent(const QByteArray& json, Document& document, QString& e
         const auto text = block.indexText();
         if (!text.trimmed().isEmpty()) texts.append(text);
     }
-    if (result.text.trimmed().isEmpty()) return fail("No indexable text in document");
+    if (result.text.trimmed().isEmpty() && !(allowEmptyPreview && result.pendingImages > 0)) return fail("No indexable text in document");
     if (texts.join("\n") != result.text) return fail("Document text does not match its blocks");
     document = std::move(result);
     return true;

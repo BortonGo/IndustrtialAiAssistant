@@ -97,6 +97,13 @@ def extract_document(args):
             temporary.replace(checkpoint)
         finally:
             temporary.unlink(missing_ok=True)
+    if getattr(args, 'native_only', False):
+        pending = sum(b['type'] == 'image' for b in blocks)
+        native = [b for b in blocks if b['type'] != 'image']
+        text = blocks_to_text(native)
+        if not text.strip() and not pending:
+            raise ValueError('В документе нет доступного текста или изображений')
+        return {'text': text, 'blocks': native, 'warnings': warnings, 'pendingImages': pending}
     analyzer = (ImageAnalyzer(args.vision_url, "local-chat", args.vision_profile,
                               images / "descriptions", progress=progress) if args.vision_url else None)
     describe_images(blocks, analyzer, warnings, progress, args.vision_parallel_requests)
@@ -120,6 +127,7 @@ if __name__ == "__main__":
     parser.add_argument("--vision-parallel-requests", type=int, choices=(1, 2), default=1)
     parser.add_argument("--soffice", default="")
     parser.add_argument("--checkpoint-dir", type=Path)
+    parser.add_argument("--native-only", action="store_true")
     args = parser.parse_args()
     try:
         print(json.dumps(extract_document(args), ensure_ascii=False))

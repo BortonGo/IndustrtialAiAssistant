@@ -11,6 +11,7 @@ enum class DocumentStatus {
     Indexing,
     Ready,
     ReadyWithWarnings,
+    TextReady,
     Error
 };
 
@@ -21,6 +22,7 @@ struct Document final {
     DocumentStatus status = DocumentStatus::Pending;
     std::vector<DocumentBlock> blocks;
     QStringList warnings;
+    int pendingImages = 0;
 
     static QString statusToQString(const DocumentStatus& status_) {
         switch (status_) {
@@ -32,6 +34,8 @@ struct Document final {
             return "Готов";
         case DocumentStatus::ReadyWithWarnings :
             return "Готов с предупреждениями";
+        case DocumentStatus::TextReady :
+            return "Текст готов · изображения не распознаны";
         case DocumentStatus::Error :
         default:
             return "Ошибка";

@@ -17,8 +17,8 @@ from repository import Repository
 class StorageTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        directory = ROOT / 'build-storage-check'
-        directory.mkdir(exist_ok=True)
+        directory = ROOT / 'build-qtcreator/test-artifacts/storage'
+        directory.mkdir(parents=True, exist_ok=True)
         cls.tmp = tempfile.TemporaryDirectory(dir=directory)
         cls.work = Path(cls.tmp.name)
         cls.model = cls.work / 'model-fixture.gguf'
@@ -377,6 +377,56 @@ class StorageTests(unittest.TestCase):
         document['id'] = job['documentId']
         entries[0]['chunk']['documentId'] = job['documentId']
         return job, document, entries
+
+    def test_text_preview_survives_pause_restart_and_is_replaced_atomically(self):
+        job, full, entries = self.import_job()
+        preview = copy.deepcopy(full)
+        preview.update(text='Native fact', blocks=[{'type':'text', 'text':'Native fact'}], pendingImages=2)
+        native_entries = copy.deepcopy(entries)
+        native_entries[0]['chunk'].update(text='Native fact', imagePath='')
+        self.repo.start_import({'id': job['id']})
+        self.repo.save_document({'importId':job['id'], 'chatId':job['chatId'], 'document':preview, 'entries':native_entries})
+        self.assertEqual(self.repo.list_imports({})['jobs'][0]['status'], 'running')
+        restored = self.repo.load_chat({'chatId':job['chatId']})
+        self.assertEqual(restored['documents'][0]['status'], 'TextReady')
+        self.assertEqual(restored['documents'][0]['pendingImages'], 2)
+        self.assertEqual(restored['entries'][0]['chunk']['text'], 'Native fact')
+        self.repo.close()
+        self.repo = Repository(self.options, self.work / 'data', self.model)
+        self.assertEqual(self.repo.list_imports({})['jobs'][0]['status'], 'paused')
+        self.repo.update_import({'id':job['id'], 'status':'queued'})
+        resumed = self.repo.start_import({'id':job['id']})
+        self.assertTrue(resumed['job']['nativeDone'])
+        self.assertEqual(resumed['job']['checkpoint'], {})
+        self.assertEqual(resumed['reusableEntries'][0]['text'], 'Native fact')
+        bad = copy.deepcopy(entries); bad[0]['embedding'] = [1.0]
+        with self.assertRaises(ValueError):
+            self.repo.save_document({'importId':job['id'], 'chatId':job['chatId'], 'document':copy.deepcopy(full), 'entries':bad})
+        self.assertEqual(self.repo.load_chat({'chatId':job['chatId']})['documents'][0]['status'], 'TextReady')
+        self.repo.save_document({'importId':job['id'], 'chatId':job['chatId'], 'document':full, 'entries':entries})
+        complete = self.repo.load_chat({'chatId':job['chatId']})
+        self.assertEqual(len(complete['documents']), 1)
+        self.assertEqual(complete['documents'][0]['status'], 'Ready')
+        self.assertEqual(complete['documents'][0]['pendingImages'], 0)
+        self.assertEqual(complete['documents'][0]['blocks'][0]['type'], 'image')
+
+    def test_native_preview_never_replaces_existing_document_and_cancel_keeps_preview(self):
+        job, full, entries = self.import_job()
+        self.repo.save_document({'chatId':job['chatId'], 'document':copy.deepcopy(full), 'entries':copy.deepcopy(entries)})
+        self.assertTrue(self.repo.start_import({'id':job['id']})['job']['nativeDone'])
+        preview = copy.deepcopy(full)
+        preview.update(text='Native fact', blocks=[{'type':'text', 'text':'Native fact'}], pendingImages=1)
+        native_entries = copy.deepcopy(entries); native_entries[0]['chunk'].update(text='Native fact', imagePath='')
+        result = self.repo.save_document({'importId':job['id'], 'chatId':job['chatId'], 'document':preview, 'entries':native_entries})
+        self.assertFalse(result['published'])
+        self.assertEqual(self.repo.load_chat({'chatId':job['chatId']})['documents'][0]['status'], 'Ready')
+        other, doc, values = self.import_job()
+        self.repo.start_import({'id':other['id']})
+        doc.update(text='Preview', blocks=[{'type':'text', 'text':'Preview'}], pendingImages=1)
+        values[0]['chunk'].update(text='Preview', imagePath='')
+        self.repo.save_document({'importId':other['id'], 'chatId':other['chatId'], 'document':doc, 'entries':values})
+        self.repo.update_import({'id':other['id'], 'status':'cancelled'})
+        self.assertEqual(self.repo.load_chat({'chatId':other['chatId']})['documents'][0]['status'], 'TextReady')
 
     def test_import_deduplicates_and_survives_restart_with_checkpoint(self):
         job, document, entries = self.import_job()

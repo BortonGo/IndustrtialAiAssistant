@@ -23,7 +23,7 @@ QJsonObject documentToJson(const Document& document) {
     }
     if (blocks.isEmpty()) blocks.append(QJsonObject{{"type","text"},{"text",document.text},{"pageNumber",0}});
     return {{"id",document.id},{"sourcePath",document.sourcePath},{"text",document.text},
-            {"blocks",blocks},{"warnings",QJsonArray::fromStringList(document.warnings)}};
+            {"blocks",blocks},{"warnings",QJsonArray::fromStringList(document.warnings)},{"pendingImages",document.pendingImages}};
 }
 
 Document documentFromJson(const QJsonObject& value) {
@@ -33,7 +33,7 @@ Document documentFromJson(const QJsonObject& value) {
     result.id = value.value("id").toString();
     result.sourcePath = value.value("sourcePath").toString();
     const auto status = value.value("status").toString();
-    result.status = status == "Ready" ? DocumentStatus::Ready : status == "ReadyWithWarnings" ? DocumentStatus::ReadyWithWarnings : DocumentStatus::Error;
+    result.status = status == "TextReady" ? DocumentStatus::TextReady : status == "Ready" ? DocumentStatus::Ready : status == "ReadyWithWarnings" ? DocumentStatus::ReadyWithWarnings : DocumentStatus::Error;
     for (const auto& block : result.blocks) {
         if (block.type != DocumentBlockType::Image) continue;
         const QFileInfo image(block.imagePath);

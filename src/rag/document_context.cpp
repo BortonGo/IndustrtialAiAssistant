@@ -12,7 +12,10 @@ QString normalized(QString value) {
     return value.simplified();
 }
 bool ready(const Document* document) {
-    return document && (document->status == DocumentStatus::Ready || document->status == DocumentStatus::ReadyWithWarnings);
+    return document && (document->status == DocumentStatus::Ready || document->status == DocumentStatus::ReadyWithWarnings || document->status == DocumentStatus::TextReady);
+}
+QString coverageWarning(const Document& document) {
+    return document.pendingImages > 0 ? QStringLiteral("Доступны текст и таблицы; %1 изображений ещё не распознано. Содержимое этих изображений неизвестно.\n").arg(document.pendingImages) : QString();
 }
 bool heading(const DocumentBlock& block) {
     if (block.type != DocumentBlockType::Text) return false;
@@ -146,6 +149,7 @@ std::vector<ContextSource> DocumentContext::collect(const QString& question, con
             (whole ? QStringLiteral("Охват: весь извлечённый документ.\n") :
                      QStringLiteral("Охват: связанный фрагмент документа; остальные разделы могут отсутствовать.\n"));
         QStringList titles, images;
+        text += coverageWarning(document);
         bool containsTables = false;
         int page = -1;
         if (document.blocks.empty()) text += document.text;
@@ -209,7 +213,7 @@ std::vector<ContextSource> DocumentContext::collect(const QString& question, con
             const auto key = document->id + ":offset:" + QString::number(hit.chunk.startOffset);
             if (included.contains(key)) continue;
             included.insert(key);
-            auto text = hit.chunk.sourceDescription() + "\n\n" + hit.chunk.text;
+            auto text = hit.chunk.sourceDescription() + "\n" + coverageWarning(*document) + "\n" + hit.chunk.text;
             if (hit.chunk.imagePath.isEmpty()) {
                 // Include neighbouring paragraphs, while retaining the matched text even
                 // when a chunk straddles two paragraphs or comes from older stored data.

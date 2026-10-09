@@ -8,6 +8,7 @@
 #include "ui/server_status_widget.hpp"
 #include "ui/ui_style.hpp"
 #include "ui/documents_widget.hpp"
+#include "documents/document_list_model.hpp"
 #include <QApplication>
 #include <QDir>
 #include <QFile>
@@ -61,8 +62,8 @@ int main(int argc, char** argv) {
         QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeuib.ttf");
     }
     app.setFont(QFont("Segoe UI", 10));
-    QDir().mkpath("build-storage-check");
-    QTemporaryDir data(QDir::current().filePath("build-storage-check/ui-XXXXXX"));
+    QDir().mkpath("build-qtcreator/test-artifacts/storage");
+    QTemporaryDir data(QDir::current().filePath("build-qtcreator/test-artifacts/storage/ui-XXXXXX"));
     require(data.isValid(), "No isolated directory");
     qputenv("LOCAL_ASSISTANT_STORAGE_DIR", data.path().toLocal8Bit());
     qputenv("LOCAL_ASSISTANT_STORAGE_PORT", "55433");
@@ -85,7 +86,18 @@ int main(int argc, char** argv) {
         sidebar->setStatusWidget(services);
         services->setChatStatus(QStringLiteral("Готов · CUDA"));
         services->setEmbeddingStatus(QStringLiteral("Готов · CUDA"));
-        DocumentsWidget documentsPage(&model);
+        DocumentManager previewManager(DocumentExtractionConfig{});
+        Document previewDocument;
+        previewDocument.id = "preview"; previewDocument.sourcePath = "C:/docs/Protocol.pdf";
+        previewDocument.status = DocumentStatus::TextReady; previewDocument.pendingImages = 38;
+        previewDocument.text = "Native text";
+        previewManager.restore({previewDocument});
+        DocumentListModel previewModel(&previewManager);
+        require(previewModel.data(previewModel.index(0, 0), Qt::DisplayRole).toString().contains(QStringLiteral("Текст готов")),
+                "Preview readiness is invisible in the document list");
+        require(previewModel.data(previewModel.index(0, 0), Qt::ToolTipRole).toString().contains("38"),
+                "Pending image count missing from document tooltip");
+        DocumentsWidget documentsPage(&previewModel);
         QJsonArray importJobs{
             QJsonObject{{"id","import-a"},{"chatId","chat-a"},{"sourcePath","C:/docs/Protocol.pdf"},{"status","running"},{"progress",QStringLiteral("Изображения: 12/50")}},
             QJsonObject{{"id","import-b"},{"chatId","chat-b"},{"sourcePath","C:/docs/Other.docx"},{"status","paused"}}
