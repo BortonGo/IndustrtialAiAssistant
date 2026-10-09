@@ -147,6 +147,7 @@ void DocumentExtractor::extract(const QString& path)
     QStringList args;
     args << "-u" << config_.scriptPath << path << "--images-dir" << QDir(cache).filePath("document-images")
          << "--poppler-dir" << config_.popplerDirectory;
+    if (config_.resumeExtraction) args << "--checkpoint-dir" << QDir(cache).filePath("document-extraction");
     if (!config_.visionUrl.isEmpty()) args << "--vision-url" << config_.visionUrl
                                         << "--vision-profile" << config_.visionProfile
                                         << "--vision-parallel-requests" << QString::number(config_.visionParallelRequests);

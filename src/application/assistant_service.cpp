@@ -1,4 +1,5 @@
 #include "assistant_service.hpp"
+#include "application/document_import_queue.hpp"
 #include "document_chunker.h"
 #include "rag/document_context.hpp"
 #include "embedding_client.hpp"
@@ -131,6 +132,21 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
     };
 
     embeddingClient_ = new EmbeddingClient(embeddingConfig, this);
+    auto importConfig = documentConfig;
+    importConfig.resumeExtraction = true;
+    imports_ = new DocumentImportQueue(storage_, importConfig, embeddingConfig, this);
+    connect(imports_, &DocumentImportQueue::errorOccurred, this, &AssistantService::errorOccurred);
+    connect(imports_, &DocumentImportQueue::logMessage, this, [this](const QString& message) {
+        emit serverLogMessage(QStringLiteral("Импорт"), message);
+    });
+    connect(imports_, &DocumentImportQueue::idle, this, &AssistantService::continuePendingQuestion);
+    connect(imports_, &DocumentImportQueue::documentSaved, this, [this](const QString& chatId, const QString& file) {
+        reloadImportedDocuments(chatId);
+        emit serverLogMessage(QStringLiteral("Импорт"), file + QStringLiteral(": сохранён и готов к поиску"));
+    });
+    connect(this, &AssistantService::busyChanged, this, [this]() {
+        imports_->setForegroundActive(state_ != AssistantState::Idle || busy_);
+    });
 
     connect(embeddingClient_, &EmbeddingClient::errorOccurred,
             this, [this](const QString &message) {
@@ -350,13 +366,18 @@ bool AssistantService::askQuestion(const QString &question, const QString& messa
     if (targetChat.isEmpty()) return false;
     state_ = AssistantState::Preparing;
     busy_ = true;
+    pendingQuestionChatId_ = targetChat;
+    waitingForImports_ = true;
     emit busyChanged(true);
-    if (targetChat == activeChatId_) {
-        startQuestion();
-    } else if (targetChat == visibleChatId_ && !loadingChat_) {
-        copyVisibleWorkspace();
-        startQuestion();
-    } else {
+    continuePendingQuestion();
+    return true;
+}
+
+void AssistantService::continuePendingQuestion() {
+    if (shuttingDown_ || !waitingForImports_ || state_ != AssistantState::Preparing || !imports_->isIdle()) return;
+    waitingForImports_ = false;
+    const auto targetChat = pendingQuestionChatId_, messageId = requestMessageId_;
+    // Reload after the importer has released its job, including any just-committed index.
         storage_->request("load_chat", {{"chatId",targetChat},{"remember",false}},
                           [this,targetChat,messageId](const QJsonObject& data, const QString& error) {
             if (shuttingDown_ || state_ != AssistantState::Preparing || requestMessageId_ != messageId) return;
@@ -374,8 +395,31 @@ bool AssistantService::askQuestion(const QString &question, const QString& messa
             if (!failure.isEmpty()) { importingAttachments_ = false; state_ = AssistantState::Idle; busy_ = false; emit busyChanged(isBusy()); emit questionFailed(failure); return; }
             startQuestion();
         });
-    }
-    return true;
+}
+
+void AssistantService::reloadImportedDocuments(const QString& chatId) {
+    const auto version = selectionVersion_;
+    const bool visible = visibleChatId_ == chatId;
+    if (visible) { loadingChat_ = true; emit busyChanged(isBusy()); }
+    storage_->request("load_chat", {{"chatId",chatId},{"remember",false}},
+        [this,chatId,version,visible](const QJsonObject& data, const QString& error) {
+        if (shuttingDown_) return;
+        try {
+            if (!error.isEmpty()) throw std::runtime_error(error.toUtf8().constData());
+            std::vector<Document> documents;
+            VectorStore::InMemoryVectorStore index;
+            for (const auto& value : data.value("documents").toArray()) documents.push_back(documentFromJson(value.toObject()));
+            for (const auto& value : data.value("entries").toArray()) index.add(entryFromJson(value.toObject()));
+            if (state_ == AssistantState::Idle && activeChatId_ == chatId) {
+                documentManager_->restore(documents); vectorStore_ = index;
+            }
+            if (version == selectionVersion_ && visibleChatId_ == chatId) {
+                visibleDocuments_->restore(std::move(documents)); visibleIndex_ = std::move(index);
+            }
+        } catch (const std::exception& failure) { emit errorOccurred(QString::fromUtf8(failure.what())); }
+        if (visible && version == selectionVersion_) loadingChat_ = false;
+        emit busyChanged(isBusy());
+    });
 }
 
 void AssistantService::startQuestion() {
@@ -503,6 +547,7 @@ void AssistantService::forgetChat(const QString& id) {
         ++selectionVersion_; visibleChatId_.clear(); loadingChat_ = false;
         visibleDocuments_->restore({}); visibleIndex_.clear();
     }
+    imports_->refresh();
 }
 
 void AssistantService::syncVisibleDocuments() {
@@ -512,31 +557,17 @@ void AssistantService::syncVisibleDocuments() {
     visibleDocuments_->restore(std::move(documents));
 }
 
-void AssistantService::copyVisibleWorkspace() {
-    std::vector<Document> documents;
-    for (int i = 0; i < visibleDocuments_->documentCount(); ++i) documents.push_back(*visibleDocuments_->documentAt(i));
-    activeChatId_ = visibleChatId_;
-    documentManager_->restore(std::move(documents)); vectorStore_ = visibleIndex_;
-}
-
 QString AssistantService::operationChatId() const {
-    return state_ != AssistantState::Idle && state_ != AssistantState::Preparing ? activeChatId_ : QString();
+    if (state_ != AssistantState::Idle && state_ != AssistantState::Preparing) return activeChatId_;
+    return imports_ ? imports_->activeChatId() : QString();
 }
 
 void AssistantService::loadDocument(const QString& path) {
-    if (!modelsReady()) {
-        emit errorOccurred(QStringLiteral("Дождитесь готовности серверов моделей"));
+    if (!storage_->isReady() || visibleChatId_.isEmpty() || loadingChat_) {
+        emit errorOccurred(QStringLiteral("Дождитесь загрузки чата и готовности БД"));
         return;
     }
-    if (isBusy() || visibleChatId_.isEmpty()) {
-        emit errorOccurred(QStringLiteral("Дождитесь завершения текущей операции"));
-        return;
-    }
-    copyVisibleWorkspace();
-    state_ = AssistantState::Reading;
-    emit busyChanged(true);
-    emit documentProgress(QStringLiteral("Чтение документа…"), true);
-    documentManager_->loadFile(path);
+    imports_->enqueue(visibleChatId_, path);
 }
 
 void AssistantService::cancelDocument()
@@ -690,6 +721,7 @@ QString AssistantService::embeddingServerStatus() const { return embeddingServer
 void AssistantService::updateModelsReady()
 {
     const bool ready = modelsReady();
+    if (imports_) imports_->setModelsReady(ready);
     if (ready != reportedReady_) {
         reportedReady_ = ready;
         emit modelsReadyChanged(ready);
@@ -872,6 +904,7 @@ void AssistantService::handleServerFailure(const QString& message)
 void AssistantService::stopServers()
 {
     shuttingDown_ = true;
+    imports_->stop();
     storage_->stop();
     documentManager_->cancelLoading();
     if (backendProbe_ && backendProbe_->state() != QProcess::NotRunning) {

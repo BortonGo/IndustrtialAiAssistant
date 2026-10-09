@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
         waitFor([&]() { return service.modelsReady() && chats.currentChat() && !chats.isBusy() && service.isChatReady(chats.currentChat()->id); });
         const auto a = chats.currentChat()->id;
         service.loadDocument(library);
-        waitFor([&]() { return !service.isBusy(); });
+        waitFor([&]() { return !service.isBusy() && service.documentManager()->documentCount() == 1; });
         require(error.isEmpty(), qPrintable(error));
         require(chats.sendMessage(QStringLiteral("Какое давление на этом фото и какой код в прикреплённой заметке? Ответь одним предложением."), {photo, note}), "Attachment question rejected");
         const auto b = chats.createChat();

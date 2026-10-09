@@ -13,6 +13,7 @@ struct DocumentExtractionConfig {
     QString visionUrl;
     QString visionProfile;
     int visionParallelRequests = 1;
+    bool resumeExtraction = false;
     QString sofficePath;
     qint64 maxFileSize = 100 * 1024 * 1024;
     int inactivityTimeoutMs = 360000;

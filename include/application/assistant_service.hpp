@@ -18,6 +18,7 @@
 class LlamaServerProcess;
 class QProcess;
 class MCPClient;
+class DocumentImportQueue;
 
 class AssistantService final : public QObject {
     Q_OBJECT
@@ -50,6 +51,9 @@ class AssistantService final : public QObject {
     int nextAttachment_ = 0;
     bool importingAttachments_ = false;
     StorageClient* storage_ = nullptr;
+    DocumentImportQueue* imports_ = nullptr;
+    QString pendingQuestionChatId_;
+    bool waitingForImports_ = false;
 
     EmbeddingClient* embeddingClient_ = nullptr;
     AssistantState state_ = AssistantState::Idle;
@@ -105,6 +109,7 @@ public:
     QString operationChatId() const;
     bool isChatReady(const QString& id) const { return !id.isEmpty() && visibleChatId_ == id && !loadingChat_; }
     StorageClient* storage() const { return storage_; }
+    DocumentImportQueue* imports() const { return imports_; }
     void activateChat(const QString& chatId, std::function<void(const QString&)> callback);
     void forgetChat(const QString& chatId);
     void loadDocument(const QString& path);
@@ -137,11 +142,12 @@ private:
     void requestNextEmbeddingBatch();
     void prepareContext(const std::vector<ContextSource>& sources = {});
     void startQuestion();
+    void continuePendingQuestion();
+    void reloadImportedDocuments(const QString& chatId);
     void prepareNextAttachment();
     void bindAttachment(const QString& documentId);
     void failAttachment(const QString& error);
     void syncVisibleDocuments();
-    void copyVisibleWorkspace();
     void launchServers(bool useCuda);
     void updateModelsReady();
     void updateServersStopped();

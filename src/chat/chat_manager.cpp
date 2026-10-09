@@ -1,4 +1,5 @@
 #include "chat_manager.hpp"
+#include "application/document_import_queue.hpp"
 #include <QUuid>
 #include <QJsonArray>
 #include <QTimer>
@@ -21,6 +22,7 @@ std::vector<MessageAttachment> attachmentsFromJson(const QJsonArray& values) {
 }
 
 ChatManager::ChatManager(AssistantService* service, QObject* parent) : QObject(parent), service_(service) {
+    connect(service_->imports(), &DocumentImportQueue::changed, this, &ChatManager::chatActivityChanged);
     connect(service_, &AssistantService::busyChanged, this, [this]() { emit chatActivityChanged(); });
     connect(this, &ChatManager::operationChanged, this, &ChatManager::chatActivityChanged);
     connect(service_->storage(), &StorageClient::ready, this, &ChatManager::restore);

@@ -1,5 +1,6 @@
 // Manual test with real local models and a separate PostgreSQL data directory.
 #include "application/assistant_service.hpp"
+#include "application/document_import_queue.hpp"
 #include "chat/chat_manager.hpp"
 #include "llm/context_builder.hpp"
 #include <QCoreApplication>
@@ -23,6 +24,8 @@ int main(int argc, char** argv) {
     int stage = 0, exitCode = 1;
     bool seeded = false, failed = false;
     bool streamedInBackground = false;
+    bool importCompleted = false;
+    QObject::connect(service.imports(), &DocumentImportQueue::documentSaved, [&](const QString&, const QString&) { importCompleted = true; });
     const bool resume = app.arguments().contains("--resume");
     auto check = [&](bool value, const QString& error) {
         if (!value && !failed) { failed = true; qCritical().noquote() << error; service.stopServers(); }
@@ -84,14 +87,14 @@ int main(int argc, char** argv) {
         case 1:
             if (!ready || current != a) return;
             service.loadDocument(app.arguments()[1]);
-            if (!check(service.isBusy(), "Document processing never started")) return;
+            if (!check(!service.isBusy(), "Background import blocked chat controls")) return;
             b = chats.createChat();
             if (!check(!b.isEmpty(), "Creating a chat during document processing was rejected")) return;
             stage = 2; break;
         case 2:
             if (!ready || current != b) return;
             if (!check(service.documentManager()->documentCount() == 0, "Background document appeared in chat B")) return;
-            if (service.isBusy() || chats.isBusy()) return;
+            if (service.isBusy() || chats.isBusy() || !importCompleted) return;
             qInfo() << "Switched away during document processing; chat B stayed empty";
             stage = 3;
             seed(a, "ALPHA-781", [&]() { seed(b, "BRAVO-926", [&]() { seeded = true; }); });

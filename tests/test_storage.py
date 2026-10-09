@@ -370,5 +370,99 @@ class StorageTests(unittest.TestCase):
         self.assertTrue(Path(document['sourcePath']).is_file())
 
 
+    def import_job(self, chat_id=None):
+        document, entries = self.document()
+        chat_id = chat_id or self.chat()
+        job = self.repo.enqueue_import({'id': str(uuid.uuid4()), 'chatId': chat_id, 'sourcePath': document['sourcePath']})['job']
+        document['id'] = job['documentId']
+        entries[0]['chunk']['documentId'] = job['documentId']
+        return job, document, entries
+
+    def test_import_deduplicates_and_survives_restart_with_checkpoint(self):
+        job, document, entries = self.import_job()
+        duplicate = self.repo.enqueue_import({'id': str(uuid.uuid4()), 'chatId': job['chatId'], 'sourcePath': job['sourcePath']})['job']
+        self.assertEqual(job['id'], duplicate['id'])
+        self.repo.start_import({'id': job['id']})
+        self.repo.checkpoint_import({'id': job['id'], 'document': document, 'progress': 'extracted'})
+        self.repo.checkpoint_import({'id': job['id'], 'entries': entries, 'offset': 0, 'progress': '1/2'})
+        # Simulate a new application opening the same private cluster after interruption.
+        self.repo.close()
+        type(self).repo = Repository(self.options, self.work / 'data', self.model)
+        restored = self.repo.list_imports({})['jobs'][0]
+        self.assertEqual(restored['status'], 'paused')
+        self.repo.update_import({'id': job['id'], 'status': 'queued'})
+        resumed = self.repo.start_import({'id': job['id']})['job']
+        self.assertEqual(resumed['checkpoint']['document'], document)
+        self.assertEqual(resumed['checkpoint']['entries'], entries)
+        with self.assertRaisesRegex(ValueError, 'порядок'):
+            self.repo.checkpoint_import({'id': job['id'], 'entries': entries, 'offset': 0, 'progress': 'duplicate'})
+
+    def test_import_completion_atomically_replaces_document_and_clears_checkpoint(self):
+        job, document, entries = self.import_job()
+        self.repo.save_document({'chatId': job['chatId'], 'document': copy.deepcopy(document), 'entries': entries})
+        self.repo.start_import({'id': job['id']})
+        self.repo.checkpoint_import({'id': job['id'], 'document': document, 'progress': 'extracted'})
+        self.repo.checkpoint_import({'id': job['id'], 'entries': entries, 'offset': 0, 'progress': 'saved'})
+        changed = copy.deepcopy(document)
+        changed['text'] = 'Changed result'
+        payload = {'importId': job['id'], 'chatId': job['chatId'], 'document': changed, 'entries': entries}
+        bad = copy.deepcopy(payload)
+        bad['document']['blocks'][0]['type'] = 'invalid'
+        with self.assertRaises(Exception):
+            self.repo.save_document(bad)
+        self.assertEqual(self.repo.load_chat({'chatId': job['chatId']})['documents'][0]['text'], document['text'])
+        self.assertEqual(self.repo.list_imports({})['jobs'][0]['status'], 'running')
+        self.repo.save_document(payload)
+        self.assertEqual(self.repo.list_imports({})['jobs'], [])
+        self.assertEqual(self.repo.connection.execute('SELECT count(*) AS n FROM document_import_chunks').fetchone()['n'], 0)
+        self.assertEqual(self.repo.load_chat({'chatId': job['chatId']})['documents'][0]['text'], 'Changed result')
+
+    def test_import_source_edit_and_chat_mismatch_cannot_publish(self):
+        job, document, entries = self.import_job()
+        self.repo.start_import({'id': job['id']})
+        with self.assertRaisesRegex(ValueError, 'Задание'):
+            self.repo.save_document({'importId': job['id'], 'chatId': self.chat(), 'document': copy.deepcopy(document), 'entries': entries})
+        Path(job['sourcePath']).write_bytes(b'changed image')
+        with self.assertRaisesRegex(ValueError, 'Задание'):
+            self.repo.save_document({'importId': job['id'], 'chatId': job['chatId'], 'document': copy.deepcopy(document), 'entries': entries})
+        self.repo.update_import({'id': job['id'], 'status': 'queued'})
+        self.assertEqual(self.repo.start_import({'id': job['id']})['job']['status'], 'failed')
+        self.assertEqual(self.repo.load_chat({'chatId': job['chatId']})['documents'], [])
+
+    def test_foreground_attachment_reference_survives_queued_import_completion(self):
+        job, document, entries = self.import_job()
+        foreground = copy.deepcopy(document)
+        foreground['id'] = str(uuid.uuid4())
+        foreground_entries = copy.deepcopy(entries)
+        foreground_entries[0]['chunk']['documentId'] = foreground['id']
+        self.repo.save_document({'chatId': job['chatId'], 'document': foreground, 'entries': foreground_entries})
+        question = str(uuid.uuid4())
+        self.repo.save_question({'id': question, 'chatId': job['chatId'], 'text': 'Photo', 'title': 'Photo', 'attachments': [job['sourcePath']]})
+        self.repo.bind_attachment({'questionId': question, 'position': 0, 'documentId': foreground['id']})
+        self.repo.start_import({'id': job['id']})
+        self.repo.save_document({'importId': job['id'], 'chatId': job['chatId'], 'document': document, 'entries': entries})
+        stored = self.repo.load_chat({'chatId': job['chatId']})
+        self.assertEqual(stored['documents'][0]['id'], foreground['id'])
+        self.assertEqual(stored['entries'][0]['chunk']['documentId'], foreground['id'])
+        row = self.repo.connection.execute('SELECT document_id FROM message_attachments WHERE message_id=%s', (question,)).fetchone()
+        self.assertEqual(str(row['document_id']), foreground['id'])
+
+    def test_import_pause_cancel_and_chat_delete_are_isolated(self):
+        job, document, entries = self.import_job()
+        other, _, _ = self.import_job()
+        self.repo.start_import({'id': job['id']})
+        with self.assertRaisesRegex(ValueError, 'приостановите'):
+            self.repo.delete_chat({'chatId': job['chatId']})
+        self.repo.checkpoint_import({'id': job['id'], 'document': document, 'progress': 'text'})
+        self.repo.checkpoint_import({'id': job['id'], 'entries': entries, 'offset': 0, 'progress': '1'})
+        self.repo.update_import({'id': job['id'], 'status': 'paused'})
+        self.repo.delete_chat({'chatId': job['chatId']})
+        self.assertEqual([j['id'] for j in self.repo.list_imports({})['jobs']], [other['id']])
+        self.assertEqual(self.repo.connection.execute('SELECT count(*) AS n FROM document_import_chunks').fetchone()['n'], 0)
+        self.assertTrue(Path(job['sourcePath']).exists())
+        self.repo.update_import({'id': other['id'], 'status': 'cancelled'})
+        self.assertEqual(self.repo.list_imports({})['jobs'], [])
+
+
 if __name__ == '__main__':
     unittest.main()

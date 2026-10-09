@@ -34,6 +34,7 @@ class Repository:
             self.connection.execute("INSERT INTO embedding_profiles VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                                     (self.profile, model_hash, PREPROCESSING, dimension))
             self.connection.execute("UPDATE messages SET status='failed', error='Запрос прерван при завершении приложения' WHERE status='pending'")
+            self.connection.execute("UPDATE document_imports SET status='paused', progress='Импорт прерван при закрытии; можно продолжить', updated_at=now() WHERE status='running'")
 
     def migrate(self):
         with self.connection.transaction():
@@ -121,6 +122,8 @@ class Repository:
                 raise ValueError("Чат уже удалён или не найден")
             if self.connection.execute("SELECT 1 FROM messages WHERE chat_id=%s AND status='pending' LIMIT 1", (chat_id,)).fetchone():
                 raise ValueError("Дождитесь завершения ответа перед удалением чата")
+            if self.connection.execute("SELECT 1 FROM document_imports WHERE chat_id=%s AND status='running' LIMIT 1", (chat_id,)).fetchone():
+                raise ValueError("Сначала приостановите импорт документов этого чата")
             images = {row['path'] for row in self.connection.execute(
                 "SELECT b.payload->>'imagePath' AS path FROM document_blocks b "
                 "JOIN documents d ON d.id=b.document_id WHERE d.chat_id=%s AND b.kind='image'", (chat_id,))}
@@ -247,10 +250,23 @@ class Repository:
         source_key = os.path.normcase(os.path.abspath(source))
         source_hash = sha256(source)
         with self.connection.transaction():
+            if params.get('importId'):
+                job = self.connection.execute('SELECT * FROM document_imports WHERE id=%s FOR UPDATE', (params['importId'],)).fetchone()
+                if (not job or job['status'] != 'running' or str(job['chat_id']) != params['chatId'] or
+                        str(job['document_id']) != document['id'] or job['source_key'] != source_key or
+                        job['source_sha256'] != source_hash or job['profile_id'] != self.profile):
+                    raise ValueError('Задание импорта изменилось или исходный файл был изменён; добавьте файл заново')
             owner = self.connection.execute('SELECT chat_id FROM documents WHERE id=%s FOR UPDATE', (document['id'],)).fetchone()
             if owner and str(owner['chat_id']) != params['chatId']:
                 raise ValueError('Документ принадлежит другому чату')
             previous = self.connection.execute("SELECT id FROM documents WHERE chat_id=%s AND source_key=%s", (params['chatId'], source_key)).fetchone()
+            if params.get('importId') and previous and str(previous['id']) != document['id']:
+                # A foreground attachment may have imported this file while the job was paused.
+                # Keep its ID so existing message attachments retain their document reference.
+                document['id'] = str(previous['id'])
+                for entry in entries:
+                    entry['chunk']['documentId'] = document['id']
+                self.connection.execute('UPDATE document_imports SET document_id=%s WHERE id=%s', (document['id'], params['importId']))
             if previous and str(previous['id']) != document['id']:
                 self.connection.execute("DELETE FROM documents WHERE id=%s", (previous['id'],))
             if previous and str(previous['id']) == document['id']:
@@ -269,6 +285,98 @@ class Repository:
                         metadata['imagePath'] = paths[metadata['imagePath']]
                     rows.append((document['id'], i, metadata.pop('text'), metadata.pop('startOffset'), Jsonb(metadata), self.profile, entry['embedding']))
                 cursor.executemany("INSERT INTO chunks VALUES(%s,%s,%s,%s,%s,%s,%s)", rows)
+            if params.get('importId'):
+                self.connection.execute("UPDATE document_imports SET status='complete', progress='Готов к поиску', error='', checkpoint='{}', updated_at=now() WHERE id=%s", (params['importId'],))
+                self.connection.execute('DELETE FROM document_import_chunks WHERE import_id=%s', (params['importId'],))
+        return {}
+
+    @staticmethod
+    def import_json(row, checkpoint=False):
+        result = {'id': str(row['id']), 'chatId': str(row['chat_id']), 'documentId': str(row['document_id']),
+                  'sourcePath': row['source_path'], 'status': row['status'], 'progress': row['progress'], 'error': row['error']}
+        if checkpoint:
+            result['checkpoint'] = row['checkpoint']
+        return result
+
+    def enqueue_import(self, params):
+        path = Path(params['sourcePath']).resolve(strict=True)
+        if not path.is_file() or path.suffix.lower() not in ('.txt','.pdf','.doc','.docx','.png','.jpg','.jpeg','.webp','.bmp'):
+            raise ValueError('Неподдерживаемый файл для импорта')
+        if path.stat().st_size > int(params.get('maxFileSize', 100 * 1024 * 1024)):
+            raise ValueError('Документ превышает лимит размера файла')
+        key = os.path.normcase(str(path))
+        with self.connection.transaction():
+            existing = self.connection.execute("SELECT * FROM document_imports WHERE chat_id=%s AND source_key=%s AND status IN ('queued','running','paused','failed')", (params['chatId'], key)).fetchone()
+            if existing:
+                return {'job': self.import_json(existing)}
+            document = self.connection.execute('SELECT id FROM documents WHERE chat_id=%s AND source_key=%s', (params['chatId'], key)).fetchone()
+            row = self.connection.execute("INSERT INTO document_imports(id,chat_id,document_id,source_path,source_key,source_sha256,profile_id,status,progress) VALUES(%s,%s,%s,%s,%s,%s,%s,'queued','В очереди') RETURNING *",
+                (params['id'], params['chatId'], document['id'] if document else uuid.uuid4(), str(path), key, sha256(path), self.profile)).fetchone()
+            return {'job': self.import_json(row)}
+
+    def list_imports(self, params):
+        return {'jobs': [self.import_json(row) for row in self.connection.execute(
+            "SELECT id,chat_id,document_id,source_path,status,progress,error FROM document_imports WHERE status NOT IN ('complete','cancelled') ORDER BY created_at,id")]}
+
+    def start_import(self, params):
+        with self.connection.transaction():
+            row = self.connection.execute('SELECT * FROM document_imports WHERE id=%s FOR UPDATE', (params['id'],)).fetchone()
+            if not row or row['status'] != 'queued':
+                raise ValueError('Задание больше не ожидает обработки')
+            try:
+                if sha256(row['source_path']) != row['source_sha256']:
+                    raise ValueError('Файл изменился. Удалите задание из очереди и добавьте файл заново')
+            except (OSError, ValueError) as error:
+                row = self.connection.execute("UPDATE document_imports SET status='failed',error=%s,updated_at=now() WHERE id=%s RETURNING *", (str(error), row['id'])).fetchone()
+                return {'job': self.import_json(row)}
+            if row['profile_id'] != self.profile:
+                self.connection.execute('DELETE FROM document_import_chunks WHERE import_id=%s', (row['id'],))
+            row = self.connection.execute("UPDATE document_imports SET status='running',error='',profile_id=%s,checkpoint=CASE WHEN profile_id=%s THEN checkpoint ELSE '{}'::jsonb END,updated_at=now() WHERE id=%s RETURNING *", (self.profile, self.profile, row['id'])).fetchone()
+            if row['checkpoint']:
+                row['checkpoint']['entries'] = [r['payload'] for r in self.connection.execute('SELECT payload FROM document_import_chunks WHERE import_id=%s ORDER BY position', (row['id'],))]
+            return {'job': self.import_json(row, True)}
+
+    def update_import(self, params):
+        transitions = {'queued': {'paused','cancelled'}, 'paused': {'queued','cancelled'},
+                       'failed': {'queued','cancelled'}, 'running': {'queued','paused','failed','cancelled','running'}}
+        with self.connection.transaction():
+            row = self.connection.execute('SELECT * FROM document_imports WHERE id=%s FOR UPDATE', (params['id'],)).fetchone()
+            if not row or params['status'] not in transitions.get(row['status'], set()):
+                raise ValueError('Состояние задания уже изменилось')
+            row = self.connection.execute("UPDATE document_imports SET status=%s,progress=%s,error=%s,checkpoint=CASE WHEN %s='cancelled' THEN '{}'::jsonb ELSE checkpoint END,updated_at=now() WHERE id=%s RETURNING *",
+                (params['status'], params.get('progress', row['progress']), params.get('error', ''), params['status'], row['id'])).fetchone()
+            if params['status'] == 'cancelled':
+                self.connection.execute('DELETE FROM document_import_chunks WHERE import_id=%s', (row['id'],))
+            return {'job': self.import_json(row)}
+
+    def checkpoint_import(self, params):
+        with self.connection.transaction():
+            row = self.connection.execute("SELECT * FROM document_imports WHERE id=%s AND status='running' FOR UPDATE", (params['id'],)).fetchone()
+            if not row or row['profile_id'] != self.profile:
+                raise ValueError('Задание не выполняется или модель изменилась')
+            checkpoint = row['checkpoint']
+            if 'document' in params:
+                document = params['document']
+                if (document['id'] != str(row['document_id']) or
+                        os.path.normcase(os.path.abspath(document['sourcePath'])) != row['source_key']):
+                    raise ValueError('Документ не принадлежит заданию')
+                checkpoint = {'document': document}
+                self.connection.execute('DELETE FROM document_import_chunks WHERE import_id=%s', (row['id'],))
+            if 'entries' in params:
+                count = self.connection.execute('SELECT count(*) AS count FROM document_import_chunks WHERE import_id=%s', (row['id'],)).fetchone()['count']
+                if not checkpoint or count != params['offset']:
+                    raise ValueError('Нарушен порядок сохранения индекса')
+                for entry in params['entries']:
+                    vector = entry['embedding']
+                    if (entry['chunk']['documentId'] != str(row['document_id']) or len(vector) != self.dimension or
+                            not all(isinstance(x, (float, int)) and not isinstance(x, bool) and math.isfinite(x) for x in vector) or not any(vector)):
+                        raise ValueError('Некорректный фрагмент индекса')
+                with self.connection.cursor() as cursor:
+                    cursor.executemany('INSERT INTO document_import_chunks VALUES(%s,%s,%s)',
+                        [(row['id'], count + i, Jsonb(entry)) for i, entry in enumerate(params['entries'])])
+            if 'document' in params:
+                self.connection.execute('UPDATE document_imports SET checkpoint=%s WHERE id=%s', (Jsonb(checkpoint), row['id']))
+            self.connection.execute('UPDATE document_imports SET progress=%s,updated_at=now() WHERE id=%s', (params['progress'], row['id']))
         return {}
 
     def load_chat(self, params):
@@ -307,7 +415,8 @@ class Repository:
             return result
 
     def dispatch(self, method, params):
-        if method not in ('bootstrap', 'create_chat', 'delete_chat', 'select_chat', 'question_history', 'save_question', 'save_context', 'finish_question', 'save_document', 'load_chat', 'bind_attachment'):
+        if method not in ('bootstrap', 'create_chat', 'delete_chat', 'select_chat', 'question_history', 'save_question', 'save_context', 'finish_question', 'save_document', 'load_chat', 'bind_attachment',
+                          'enqueue_import', 'list_imports', 'start_import', 'update_import', 'checkpoint_import'):
             raise ValueError("Неизвестная операция хранилища")
         return getattr(self, method)(params)
 

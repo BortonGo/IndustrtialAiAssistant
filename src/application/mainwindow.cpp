@@ -4,6 +4,7 @@
 #include "ui/chat_widget.hpp"
 #include "ui/sidebar_widget.hpp"
 #include "assistant_service.hpp"
+#include "application/document_import_queue.hpp"
 #include "chat_manager.hpp"
 #include "chat_list_model.hpp"
 #include "documents/document_list_model.hpp"
@@ -145,7 +146,7 @@ MainWindow::MainWindow(QWidget *parent) :
         const bool idle = !service->isBusy() && !chatManager->isBusy();
         chatPage->setSendEnabled(ready && idle);
         chatPage->setUploadEnabled(ready && idle);
-        documentsPage->setUploadEnabled(ready && idle);
+        documentsPage->setUploadEnabled(service->storage()->isReady() && chat && service->isChatReady(chat->id));
         chatPage->setWaitingForAnswer(chat && chatManager->isAwaitingAnswer(chat->id));
     };
     connect(chatManager, &ChatManager::operationChanged, this, updateControls);
@@ -155,6 +156,13 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(service, &AssistantService::busyChanged, this,
             [updateControls](bool) { updateControls(); });
     updateControls();
+    auto updateImports = [service,chatManager,documentsPage]() {
+        const auto* chat = chatManager->currentChat();
+        documentsPage->setImportJobs(service->imports()->jobs(), chat ? chat->id : QString());
+    };
+    connect(service->imports(), &DocumentImportQueue::changed, this, updateImports);
+    connect(chatManager, &ChatManager::currentChatChanged, this, updateImports);
+    connect(documentsPage, &DocumentsWidget::importActionRequested, service->imports(), &DocumentImportQueue::control);
     connect(service, &AssistantService::serversStopped, this, [this]() {
         shutdownComplete_ = true;
         QTimer::singleShot(0, this, [this]() { close(); });
@@ -273,18 +281,14 @@ MainWindow::MainWindow(QWidget *parent) :
 
     // Load document
     auto openDocument = [this, service, chatManager]() {
-        const QString path = QFileDialog::getOpenFileName(
+        const QStringList paths = QFileDialog::getOpenFileNames(
             this,
             tr("Выберите документ или изображение"),
             QString(),
             tr("Документы и изображения (*.txt *.pdf *.docx *.doc *.png *.jpg *.jpeg *.webp *.bmp);;"
                "Документы (*.txt *.pdf *.docx *.doc);;Изображения (*.png *.jpg *.jpeg *.webp *.bmp)"));
 
-        if (path.isEmpty() || chatManager->isBusy()) {
-            return;
-        }
-
-        service->loadDocument(path);
+        for (const auto& path : paths) service->loadDocument(path);
     };
 
     connect(chatPage, &ChatWidget::documentUploadRequested, this, [this, chatPage]() {

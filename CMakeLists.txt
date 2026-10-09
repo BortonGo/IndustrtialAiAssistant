@@ -34,6 +34,7 @@ set_target_properties(md4c PROPERTIES
 )
 
 add_executable(IndustrialAiAssistant src/main.cpp
+    include/application/document_import_queue.hpp src/application/document_import_queue.cpp
     include/llm/context_builder.hpp src/llm/context_builder.cpp
     include/llm/context_selection.hpp src/llm/context_selection.cpp
     include/llm/system_status_policy.hpp src/llm/system_status_policy.cpp
@@ -177,6 +178,18 @@ if(LOCAL_ASSISTANT_BUILD_TESTS)
     get_target_property(APP_TEST_SOURCES IndustrialAiAssistant SOURCES)
     get_target_property(APP_TEST_INCLUDES IndustrialAiAssistant INCLUDE_DIRECTORIES)
     list(REMOVE_ITEM APP_TEST_SOURCES src/main.cpp)
+    add_executable(service_import_test EXCLUDE_FROM_ALL tests/service_import_test.cpp ${APP_TEST_SOURCES})
+    target_include_directories(service_import_test PRIVATE ${APP_TEST_INCLUDES})
+    target_link_libraries(service_import_test PRIVATE Qt5::Widgets Qt5::Network md4c)
+    if(WIN32)
+        target_link_libraries(service_import_test PRIVATE dwmapi)
+    endif()
+    add_executable(document_import_queue_test EXCLUDE_FROM_ALL tests/document_import_queue_test.cpp ${APP_TEST_SOURCES})
+    target_include_directories(document_import_queue_test PRIVATE ${APP_TEST_INCLUDES})
+    target_link_libraries(document_import_queue_test PRIVATE Qt5::Widgets Qt5::Network md4c)
+    if(WIN32)
+        target_link_libraries(document_import_queue_test PRIVATE dwmapi)
+    endif()
     add_executable(service_pipeline_test EXCLUDE_FROM_ALL tests/service_pipeline_test.cpp ${APP_TEST_SOURCES})
     target_include_directories(service_pipeline_test PRIVATE ${APP_TEST_INCLUDES})
     target_link_libraries(service_pipeline_test PRIVATE Qt5::Widgets Qt5::Network md4c)

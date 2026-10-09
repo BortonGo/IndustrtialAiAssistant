@@ -31,6 +31,7 @@
 #include <QClipboard>
 #include <QKeyEvent>
 #include <QMimeData>
+#include <QListWidget>
 #include <QStandardPaths>
 #include <stdexcept>
 
@@ -85,6 +86,29 @@ int main(int argc, char** argv) {
         services->setChatStatus(QStringLiteral("Готов · CUDA"));
         services->setEmbeddingStatus(QStringLiteral("Готов · CUDA"));
         DocumentsWidget documentsPage(&model);
+        QJsonArray importJobs{
+            QJsonObject{{"id","import-a"},{"chatId","chat-a"},{"sourcePath","C:/docs/Protocol.pdf"},{"status","running"},{"progress",QStringLiteral("Изображения: 12/50")}},
+            QJsonObject{{"id","import-b"},{"chatId","chat-b"},{"sourcePath","C:/docs/Other.docx"},{"status","paused"}}
+        };
+        QString importAction, importId;
+        QObject::connect(&documentsPage, &DocumentsWidget::importActionRequested, [&](const QString& id, const QString& action) { importId = id; importAction = action; });
+        documentsPage.setImportJobs(importJobs, "chat-a");
+        auto* importList = documentsPage.findChild<QListWidget*>("documentImportQueue");
+        require(importList && importList->count() == 1 && importList->item(0)->text().contains("Protocol.pdf"), "Queue leaked another chat's jobs");
+        documentsPage.findChild<QPushButton*>("pauseImport")->click();
+        require(importId == "import-a" && importAction == "paused", "Pause button routes to wrong job");
+        require(!documentsPage.findChild<QPushButton*>("resumeImport")->isEnabled(), "Running job should not offer resume");
+        documentsPage.setObjectName("workspace"); documentsPage.setAttribute(Qt::WA_StyledBackground, true);
+        documentsPage.setStyleSheet(UiStyle::applicationStyleSheet()); documentsPage.resize(850, 600);
+        documentsPage.show(); app.processEvents();
+        documentsPage.grab().save("build-qtcreator/import-queue-preview.png"); documentsPage.hide();
+        documentsPage.setImportJobs(importJobs, "chat-b");
+        documentsPage.findChild<QPushButton*>("resumeImport")->click();
+        require(importId == "import-b" && importAction == "queued", "Resume button routes to wrong job");
+        documentsPage.findChild<QPushButton*>("cancelImport")->click();
+        require(importAction == "cancelled", "Queue cancel action is missing");
+        documentsPage.setImportJobs({}, "chat-a");
+        require(importList->isHidden(), "Empty queue still occupies the documents page");
         bool backToChat = false, requestedDocuments = false;
         QObject::connect(&documentsPage, &DocumentsWidget::chatPageRequested, [&]() { backToChat = true; });
         QObject::connect(page, &ChatWidget::documentsPageRequested, [&]() { requestedDocuments = true; });

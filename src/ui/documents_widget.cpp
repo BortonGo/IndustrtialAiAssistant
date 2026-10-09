@@ -7,6 +7,9 @@
 #include <QLabel>
 #include <QToolButton>
 #include <QHBoxLayout>
+#include <QListWidget>
+#include <QJsonObject>
+#include <QFileInfo>
 
 DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : QWidget(parent){
     auto* pageLayout = new QVBoxLayout(this);
@@ -45,6 +48,31 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
     uploadButton_ = btnAddDocument;
     documentsLayout->addWidget(btnAddDocument, 0, Qt::AlignLeft);
 
+    importsLabel_ = new QLabel(QStringLiteral("Очередь обработки · можно задавать вопросы во время импорта"));
+    importsLabel_->setWordWrap(true);
+    documentsLayout->addWidget(importsLabel_);
+    importsList_ = new QListWidget;
+    importsList_->setObjectName("documentImportQueue");
+    importsList_->setAccessibleName(QStringLiteral("Очередь обработки документов"));
+    importsList_->setStyleSheet("QListWidget { background: #242527; border: 1px solid #363739; border-radius: 8px; } QListWidget::item { padding: 8px; } QListWidget::item:selected { background: #323437; }");
+    documentsLayout->addWidget(importsList_);
+    auto* queueActions = new QHBoxLayout;
+    pauseImport_ = new QPushButton(QStringLiteral("Пауза")); pauseImport_->setObjectName("pauseImport");
+    resumeImport_ = new QPushButton(QStringLiteral("Продолжить")); resumeImport_->setObjectName("resumeImport");
+    cancelImport_ = new QPushButton(QStringLiteral("Убрать из очереди")); cancelImport_->setObjectName("cancelImport");
+    for (auto* button : {pauseImport_, resumeImport_, cancelImport_})
+        button->setStyleSheet("QPushButton { border: 1px solid #363739; padding: 6px 12px; }");
+    queueActions->addWidget(pauseImport_); queueActions->addWidget(resumeImport_); queueActions->addWidget(cancelImport_); queueActions->addStretch();
+    documentsLayout->addLayout(queueActions);
+    connect(importsList_, &QListWidget::currentRowChanged, this, [this]() { updateImportActions(); });
+    auto action = [this](const QString& status) {
+        if (auto* item = importsList_->currentItem()) emit importActionRequested(item->data(Qt::UserRole).toString(), status);
+    };
+    connect(pauseImport_, &QPushButton::clicked, this, [action]() { action("paused"); });
+    connect(resumeImport_, &QPushButton::clicked, this, [action]() { action("queued"); });
+    connect(cancelImport_, &QPushButton::clicked, this, [action]() { action("cancelled"); });
+    setImportJobs({}, {});
+
     QListView* documentListView = new QListView(this);
     documentListView->setModel(model);
     documentListView->setStyleSheet(
@@ -75,3 +103,35 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
 }
 
 void DocumentsWidget::setUploadEnabled(bool enabled) { uploadButton_->setEnabled(enabled); }
+
+void DocumentsWidget::setImportJobs(const QJsonArray& jobs, const QString& chatId) {
+    const auto selected = importsList_->currentItem() ? importsList_->currentItem()->data(Qt::UserRole).toString() : QString();
+    importsList_->blockSignals(true); importsList_->clear();
+    for (const auto& value : jobs) {
+        const auto job = value.toObject();
+        if (job.value("chatId").toString() != chatId) continue;
+        const auto status = job.value("status").toString();
+        const auto label = status == "queued" ? QStringLiteral("В очереди") : status == "paused" ? QStringLiteral("Пауза") :
+                           status == "failed" ? QStringLiteral("Ошибка") : QStringLiteral("Обработка");
+        auto* item = new QListWidgetItem(QFileInfo(job.value("sourcePath").toString()).fileName() + " · " + label + "\n" +
+            (job.value("error").toString().isEmpty() ? job.value("progress").toString() : job.value("error").toString()), importsList_);
+        item->setData(Qt::UserRole, job.value("id").toString()); item->setData(Qt::UserRole + 1, status);
+        item->setToolTip(job.value("sourcePath").toString() + "\n" + item->text());
+        if (job.value("id").toString() == selected) importsList_->setCurrentItem(item);
+    }
+    if (!importsList_->currentItem() && importsList_->count()) importsList_->setCurrentRow(0);
+    importsList_->blockSignals(false);
+    importsList_->setFixedHeight(qBound(66, importsList_->count() * 58 + 8, 190));
+    const bool visible = importsList_->count() > 0;
+    importsLabel_->setVisible(visible); importsList_->setVisible(visible);
+    pauseImport_->setVisible(visible); resumeImport_->setVisible(visible); cancelImport_->setVisible(visible);
+    updateImportActions();
+}
+
+void DocumentsWidget::updateImportActions() {
+    const auto* item = importsList_->currentItem();
+    const auto status = item ? item->data(Qt::UserRole + 1).toString() : QString();
+    pauseImport_->setEnabled(status == "queued" || status == "running");
+    resumeImport_->setEnabled(status == "paused" || status == "failed");
+    cancelImport_->setEnabled(item != nullptr);
+}

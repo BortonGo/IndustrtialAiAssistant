@@ -1,5 +1,6 @@
 """Worker protocol: result JSON on stdout, progress lines on stderr."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -49,7 +50,29 @@ def extract_document(args):
     images.mkdir(parents=True, exist_ok=True)
     progress("Чтение документа: " + path.name)
     suffix = path.suffix.lower()
-    if suffix == ".pdf":
+    checkpoint = None
+    blocks = None
+    checkpoint_dir = getattr(args, 'checkpoint_dir', None)
+    if checkpoint_dir:
+        # Content identity prevents reuse after an edit, including unchanged filename/mtime.
+        with path.open('rb') as stream:
+            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        key = hashlib.sha256(('extraction-v1:' + suffix + ':' + digest).encode()).hexdigest()
+        checkpoint = Path(checkpoint_dir) / (key + '.json')
+        try:
+            if checkpoint.stat().st_size <= 64 * 1024 * 1024:
+                saved = json.loads(checkpoint.read_text(encoding='utf-8'))
+                candidates = saved['blocks']
+                if isinstance(candidates, list) and all(
+                    b.get('type') != 'image' or Path(b['imagePath']).is_file() for b in candidates
+                ):
+                    blocks, warnings = candidates, saved['warnings']
+                    progress('Продолжение: текст и изображения восстановлены из сохранённого разбора')
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            pass
+    if blocks is not None:
+        pass
+    elif suffix == ".pdf":
         blocks = read_pdf.extract_blocks(path, images, args.poppler_dir, warnings, progress)
     elif suffix == ".docx":
         blocks = read_docx.extract_blocks(path, images, warnings)
@@ -63,6 +86,17 @@ def extract_document(args):
         blocks = read_image.extract_blocks(path, images)
     else:
         raise ValueError("Поддерживаются PDF, DOC, DOCX и изображения PNG, JPG, JPEG, WEBP, BMP")
+    if checkpoint:
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('rb') as stream:
+            if hashlib.file_digest(stream, 'sha256').hexdigest() != digest:
+                raise ValueError('Исходный документ изменился во время чтения; добавьте его заново')
+        temporary = checkpoint.with_suffix(f'.{os.getpid()}.tmp')
+        try:
+            temporary.write_text(json.dumps({'blocks': blocks, 'warnings': warnings}, ensure_ascii=False), encoding='utf-8')
+            temporary.replace(checkpoint)
+        finally:
+            temporary.unlink(missing_ok=True)
     analyzer = (ImageAnalyzer(args.vision_url, "local-chat", args.vision_profile,
                               images / "descriptions", progress=progress) if args.vision_url else None)
     describe_images(blocks, analyzer, warnings, progress, args.vision_parallel_requests)
@@ -85,6 +119,7 @@ if __name__ == "__main__":
     parser.add_argument("--vision-profile", default="")
     parser.add_argument("--vision-parallel-requests", type=int, choices=(1, 2), default=1)
     parser.add_argument("--soffice", default="")
+    parser.add_argument("--checkpoint-dir", type=Path)
     args = parser.parse_args()
     try:
         print(json.dumps(extract_document(args), ensure_ascii=False))
