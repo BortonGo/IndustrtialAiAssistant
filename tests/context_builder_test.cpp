@@ -33,6 +33,7 @@ public:
     bool failHttp = false;
     int streamInterval = 1;
     QString selection = "{\"context\":\"conversation\",\"sources\":[],\"history\":[0],\"system_status\":false}";
+    QString conversationPlan = "{\"memory\":[0],\"anchor\":0,\"query\":\"PUMP-417 pressure\"}";
     QJsonObject lastAnswerRequest;
     TokenServer() {
         connect(this, &QTcpServer::newConnection, this, [this]() {
@@ -101,7 +102,9 @@ public:
                             return;
                         }
                         response["choices"] = QJsonArray{QJsonObject{{"finish_reason", selecting ? QString("stop") : answerFinishReason},
-                            {"message", QJsonObject{{"role", "assistant"}, {"content", selecting ? selection : generatedAnswer}}}}};
+                            {"message", QJsonObject{{"role", "assistant"}, {"content", selecting ?
+                                (body["response_format"].toObject()["schema"].toObject()["properties"].toObject().contains("anchor") ? conversationPlan : selection)
+                                : generatedAnswer}}}}};
                     }
                     const auto bytes = QJsonDocument(response).toJson(QJsonDocument::Compact);
                     socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
@@ -380,7 +383,67 @@ int main(int argc, char** argv) {
         client.prepare(identity); streamLoop.exec();
         QObject::disconnect(streamReady); QObject::disconnect(streamProgress); QObject::disconnect(streamFinished); QObject::disconnect(streamError);
         require(cancelled && !stale, "Cancelled streaming request delivered stale events or no early progress");
-        qInfo() << "Context selection, complete pairs, image reserve, oversized input, server errors and cancellation passed";
+        const QJsonArray memory{QJsonObject{{"questionId","user-old"},{"text",QStringLiteral("Меня зовут Алексей.")}}};
+        const QJsonObject memoryState{{"compactThrough",1},{"candidates",memory}, {"pairs",QJsonArray{
+            QJsonObject{{"question",QStringLiteral("Где находится PUMP-417?")},{"answer","Room 218. CPU 88%."}}}}};
+        require(needsFollowupQuery(QStringLiteral("А какое у него давление?")), "Follow-up was not detected");
+        require(!needsFollowupQuery(QStringLiteral("Объясни сортировку массива")), "Standalone question became follow-up");
+        const auto planInput = QJsonDocument(conversationPlanMessages("Pressure?",memoryState,true)).toJson();
+        require(!planInput.contains("CPU 88"), "Telemetry leaked into conversation planning");
+        auto runPlan = [&](int size) {
+            QJsonObject result; QString failure; bool done = false;
+            QEventLoop loop;
+            client.planConversation(QStringLiteral("А давление?"), memoryState, size, true,
+                [&](const QJsonObject& value, const QString& error) { result=value; failure=error; done=true; loop.quit(); });
+            QTimer::singleShot(5000,&loop,&QEventLoop::quit);
+            if (!done) loop.exec();
+            require(done,"Conversation planning callback lost");
+            return std::make_pair(result,failure);
+        };
+        auto planned = runPlan(8192);
+        require(planned.second.isEmpty() && planned.first["anchor"].toInt() == 0, "Conversation plan failed");
+        const int plannedCalls = server.completions;
+        require(!runPlan(200).second.isEmpty() && server.completions == plannedCalls, "Oversized memory sent to model");
+        server.conversationPlan = "{\"memory\":[999],\"anchor\":0,\"query\":\"bad\"}";
+        require(!runPlan(8192).second.isEmpty(), "Fabricated memory ID accepted");
+        server.conversationPlan = "{\"memory\":[0],\"anchor\":99,\"query\":\"bad\"}";
+        require(!runPlan(8192).second.isEmpty(), "Foreign follow-up turn accepted");
+        const auto memoryOnly = validateConversationPlan("{\"memory\":[0],\"anchor\":999,\"query\":\"ignored\"}",
+            memoryState,false,"Name?");
+        require(memoryOnly["memory"].toArray().size()==1 && memoryOnly["anchor"].toInt()==-1 && memoryOnly["query"].toString().isEmpty(),
+                "Disabled follow-up discarded valid memory or changed the query");
+        auto followupState=memoryState; followupState["compactThrough"]=0; followupState["candidates"]=QJsonArray{};
+        const auto followupOnly=validateConversationPlan("{\"memory\":[999],\"anchor\":0,\"query\":\"PUMP-417 pressure?\"}",
+            followupState,true,"Its pressure?");
+        require(followupOnly["memory"].toArray().isEmpty() && followupOnly["anchor"].toInt()==0,
+                "Inactive memory update invalidated the follow-up");
+        const auto newTopic = validateConversationPlan("{\"memory\":[0],\"anchor\":0,\"query\":\"How to cook buckwheat?\"}",
+            memoryState,true,"And how to cook buckwheat?");
+        require(newTopic["anchor"].toInt() == -1, "Unrelated question inherited document scope");
+        const auto inventedCode = validateConversationPlan("{\"memory\":[0],\"anchor\":0,\"query\":\"PUMP-999 pressure\"}",
+            memoryState,true,"And its pressure?");
+        require(inventedCode["anchor"].toInt() == -1, "Invented device code accepted");
+        GenerationRequest remembered;
+        remembered.question = QStringLiteral("Как меня зовут?"); remembered.memory = memory;
+        remembered.contextSize=8192; remembered.maxAnswerTokens=512;
+        QEventLoop memoryLoop; PreparedContext offeredMemory; QString memoryError;
+        builder.build(remembered,[&](const PreparedContext& value, const QString& error) { offeredMemory=value; memoryError=error; memoryLoop.quit(); });
+        QTimer::singleShot(5000,&memoryLoop,&QEventLoop::quit); memoryLoop.exec();
+        require(memoryError.isEmpty() && offeredMemory.memoryItems == 1, "Memory absent from token budget");
+        require(offeredMemory.textTokens + offeredMemory.maxAnswerTokens + ContextBuilder::safetyTokens <= offeredMemory.contextSize, "Memory exceeded context budget");
+        const auto selectedMemory = selectContext(remembered,offeredMemory,
+            "{\"context\":\"conversation\",\"sources\":[],\"history\":[],\"memory\":[0],\"system_status\":false}");
+        require(selectedMemory.memory.size() == 1, "Relevant memory was lost");
+        const auto unrelated = selectContext(remembered,offeredMemory,
+            "{\"context\":\"conversation\",\"sources\":[],\"history\":[],\"memory\":[],\"system_status\":false}");
+        require(unrelated.memory.isEmpty(), "Unrelated memory reached generation");
+        remembered.sources.push_back({QString(50000,'x'),{}});
+        remembered.history.push_back({QStringLiteral("Поправка: меня зовут Лиза."),QStringLiteral("Принято.")});
+        builder.build(remembered,[&](const PreparedContext& value,const QString& error){offeredMemory=value;memoryError=error;memoryLoop.quit();},ContextBuilder::Purpose::Selection);
+        QTimer::singleShot(5000,&memoryLoop,&QEventLoop::quit);memoryLoop.exec();
+        require(memoryError.isEmpty() && offeredMemory.memoryItems==1 && offeredMemory.sourceCount==0 && offeredMemory.historyPairs==1,
+                "Unrelated retrieval candidates evicted memory or recent corrections before selection");
+        qInfo() << "Memory planning, context selection, streaming, budgets and cancellation passed";
         return 0;
     } catch (const std::exception& error) { qCritical() << error.what(); return 1; }
 }

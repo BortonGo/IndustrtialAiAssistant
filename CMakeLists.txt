@@ -148,6 +148,12 @@ if(LOCAL_ASSISTANT_BUILD_TESTS)
     target_include_directories(context_builder_test PRIVATE include include/llm)
     target_link_libraries(context_builder_test PRIVATE Qt5::Core Qt5::Network)
     add_test(NAME context_builder COMMAND context_builder_test)
+    add_executable(conversation_memory_test EXCLUDE_FROM_ALL tests/conversation_memory_test.cpp
+        src/llm/context_builder.cpp src/llm/context_selection.cpp src/llm/system_status_policy.cpp
+        src/llm/completion_stream.cpp src/llm/lmstudio_llm_client.cpp src/llm/illm_client.cpp
+        include/llm/context_builder.hpp include/llm/illm_client.hpp)
+    target_include_directories(conversation_memory_test PRIVATE include include/llm)
+    target_link_libraries(conversation_memory_test PRIVATE Qt5::Core Qt5::Network)
     add_executable(context_relevance_test EXCLUDE_FROM_ALL tests/context_relevance_test.cpp
         src/llm/context_builder.cpp src/llm/context_selection.cpp src/llm/system_status_policy.cpp src/llm/completion_stream.cpp src/llm/lmstudio_llm_client.cpp
         src/llm/illm_client.cpp include/llm/context_builder.hpp include/llm/illm_client.hpp)

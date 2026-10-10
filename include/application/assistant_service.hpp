@@ -44,6 +44,9 @@ class AssistantService final : public QObject {
 
     ILLMClient* llmClient_ = nullptr;
     QString pendingQuestion_;
+    QString searchQuestion_;
+    QStringList followupDocuments_;
+    GenerationRequest conversation_;
     QString activeChatId_;
     QString requestMessageId_;
     QStringList pendingAttachmentPaths_;
@@ -142,6 +145,8 @@ private:
     void requestNextEmbeddingBatch();
     void prepareContext(const std::vector<ContextSource>& sources = {});
     void startQuestion();
+    void prepareConversation(const QJsonObject& data);
+    void searchQuestion();
     void continuePendingQuestion();
     void reloadImportedDocuments(const QString& chatId);
     void prepareNextAttachment();

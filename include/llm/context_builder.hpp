@@ -29,6 +29,7 @@ struct GenerationRequest {
     QString systemStatus;
     std::vector<ContextSource> sources;
     std::vector<ConversationTurn> history;
+    QJsonArray memory; // Exact quotes from older user messages, with question IDs.
     int contextSize = 8192;
     int maxAnswerTokens = 1500;
     SystemStatusAccess statusAccess = SystemStatusAccess::Unresolved;
@@ -40,6 +41,7 @@ struct PreparedContext {
     int textTokens = 0;
     int imageReserve = 0;
     int historyPairs = 0;
+    int memoryItems = 0;
     int sourceCount = 0;
     int contextSize = 0;
     int maxAnswerTokens = 0;
@@ -56,6 +58,7 @@ public:
     explicit ContextBuilder(const ModelApiConfig& config, QObject* parent = nullptr);
     void build(const GenerationRequest& request, Callback callback, Purpose purpose = Purpose::Answer);
     void cancel();
+    void countMessages(const QJsonArray& messages, std::function<void(int, const QString&)> callback);
     static constexpr int safetyTokens = 128;
     static constexpr int imageTokenReserve = 1056; // server --image-max-tokens 1024 + delimiters
 private:

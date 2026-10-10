@@ -10,6 +10,8 @@ class ILLMClient : public QObject {
 public:
     explicit ILLMClient(QObject* parent = nullptr);
     virtual void prepare(const GenerationRequest& request) = 0;
+    virtual void planConversation(const QString& question, const QJsonObject& state, int contextSize, bool followup,
+                                  std::function<void(const QJsonObject&, const QString&)> callback) = 0;
     virtual void generatePrepared() = 0;
     virtual void cancelRequests() = 0;
 signals:

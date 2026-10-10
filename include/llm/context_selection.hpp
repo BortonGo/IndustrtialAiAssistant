@@ -7,3 +7,8 @@ QJsonArray contextSelectionMessages(const GenerationRequest& request, int source
 QJsonObject contextSelectionSchema();
 GenerationRequest selectContext(const GenerationRequest& request, const PreparedContext& offered,
                                 const QString& response);
+
+bool needsFollowupQuery(const QString& question);
+QJsonArray conversationPlanMessages(const QString& question, const QJsonObject& state, bool followup);
+QJsonObject conversationPlanSchema();
+QJsonObject validateConversationPlan(const QString& response, const QJsonObject& state, bool followup, const QString& question);

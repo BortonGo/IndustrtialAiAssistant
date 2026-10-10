@@ -4,6 +4,7 @@
 #include "rag/document_context.hpp"
 #include "embedding_client.hpp"
 #include "lmstudio_llm_client.hpp"
+#include "llm/context_selection.hpp"
 #include "mcp_client.hpp"
 #include "llama_server_process.hpp"
 #include "runtime_paths.hpp"
@@ -178,29 +179,27 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
                 if (!attachedDocumentIds_.isEmpty()) {
                     for (const auto& id : attachedDocumentIds_) {
                         const QStringList scope{id};
-                        const auto result = vectorStore_.searchHybrid(pendingQuestion_, embedding, 4, scope);
-                        auto fileSources = DocumentContext::collect(pendingQuestion_, documents, result, scope);
+                        const auto result = vectorStore_.searchHybrid(searchQuestion_, embedding, 4, scope);
+                        auto fileSources = DocumentContext::collect(searchQuestion_, documents, result, scope);
                         if (fileSources.empty()) throw std::invalid_argument("Attached document has no searchable content");
                         const auto firstGroup = fileSources.front().groupId;
                         for (auto& source : fileSources) if (source.groupId == firstGroup) source.required = true;
                         sources.insert(sources.end(), fileSources.begin(), fileSources.end());
                     }
                 } else {
-                    const auto scope = DocumentContext::namedDocuments(pendingQuestion_, documents);
-                    const auto result = vectorStore_.searchHybrid(pendingQuestion_, embedding, 12, scope);
+                    auto scope = DocumentContext::namedDocuments(pendingQuestion_, documents);
+                    if (scope.isEmpty()) scope = followupDocuments_;
+                    const auto result = vectorStore_.searchHybrid(searchQuestion_, embedding, 12, scope);
                     emit retrievalReady(result);
-                    sources = DocumentContext::collect(pendingQuestion_, documents, result, scope);
+                    sources = DocumentContext::collect(searchQuestion_, documents, result, scope);
                 }
                 if (!sources.empty()) {
                     state_ = AssistantState::Generating;
                     prepareContext(sources);
                     return;
                 } else {
-                    state_ = AssistantState::Idle;
-                    busy_ = false;
-                    emit busyChanged(isBusy());
-                    emit questionFailed("Empty result");
-                    tryStartNextDocument();
+                    state_ = AssistantState::Generating;
+                    prepareContext();
                     return;
                 }
             } catch (const std::invalid_argument & e) {
@@ -362,6 +361,7 @@ bool AssistantService::askQuestion(const QString &question, const QString& messa
     pendingAttachmentPaths_ = attachments; attachedDocumentIds_.clear(); nextAttachment_ = 0;
     importingAttachments_ = !attachments.isEmpty();
     pendingQuestion_ = question;
+    searchQuestion_ = question; followupDocuments_.clear(); conversation_ = {};
     const auto targetChat = chatId.isEmpty() ? visibleChatId_ : chatId;
     if (targetChat.isEmpty()) return false;
     state_ = AssistantState::Preparing;
@@ -424,6 +424,65 @@ void AssistantService::reloadImportedDocuments(const QString& chatId) {
 
 void AssistantService::startQuestion() {
     if (importingAttachments_) { prepareNextAttachment(); return; }
+    state_ = AssistantState::Preparing;
+    if (requestMessageId_.isEmpty()) { prepareConversation({}); return; }
+    const auto messageId = requestMessageId_;
+    storage_->request("question_history", {{"questionId",messageId},{"chatId",activeChatId_},{"withMemory",true},{"contextSize",chatContextSize_}},
+        [this,messageId](const QJsonObject& data, const QString& error) {
+        if (shuttingDown_ || state_ != AssistantState::Preparing || requestMessageId_ != messageId) return;
+        if (!error.isEmpty()) { state_ = AssistantState::Idle; busy_ = false; emit busyChanged(isBusy()); emit questionFailed(error); tryStartNextDocument(); return; }
+        prepareConversation(data);
+    });
+}
+
+void AssistantService::prepareConversation(const QJsonObject& data) {
+    const auto messageId = requestMessageId_;
+    std::vector<const Document*> documents;
+    for (int i = 0; i < documentManager_->documentCount(); ++i) documents.push_back(documentManager_->documentAt(i));
+    const bool followup = !vectorStore_.empty() && pendingAttachmentPaths_.isEmpty() &&
+                          DocumentContext::namedDocuments(pendingQuestion_, documents).isEmpty() &&
+                          !data.value("pairs").toArray().isEmpty() && needsFollowupQuery(pendingQuestion_);
+    llmClient_->planConversation(pendingQuestion_, data, chatContextSize_, followup,
+        [this,data,messageId](const QJsonObject& plan, const QString& warning) {
+        if (shuttingDown_ || state_ != AssistantState::Preparing || requestMessageId_ != messageId) return;
+        if (!warning.isEmpty()) emit serverLogMessage(QStringLiteral("Память"), QStringLiteral("Используется исходная история: ") + warning);
+        if (!plan.isEmpty() && data.value("compactThrough").toDouble() > 0)
+            emit serverLogMessage(QStringLiteral("Память"), QStringLiteral("Отобрано %1 из %2 выдержек старой переписки")
+                .arg(plan.value("memory").toArray().size()).arg(data.value("candidates").toArray().size()));
+        const auto pairs = data.value("pairs").toArray();
+        const int anchor = plan.value("anchor").toInt(-1);
+        if (anchor >= 0 && anchor < pairs.size()) {
+            searchQuestion_ = plan.value("query").toString();
+            for (const auto& id : pairs[anchor].toObject().value("documentIds").toArray()) {
+                const auto* document = documentManager_->findDocument(id.toString());
+                if (document && !vectorStore_.documentEntries(id.toString()).empty()) followupDocuments_.append(id.toString());
+            }
+            emit serverLogMessage(QStringLiteral("Поиск"), QStringLiteral("Уточняющий запрос: ") + searchQuestion_);
+        }
+        const auto finish = [this,data,messageId](const QJsonObject& saved, const QString& error) {
+            if (shuttingDown_ || state_ != AssistantState::Preparing || requestMessageId_ != messageId) return;
+            if (!error.isEmpty()) emit serverLogMessage(QStringLiteral("Память"), QStringLiteral("Обновление не сохранено: ") + error);
+            const auto memory = error.isEmpty() && !saved.isEmpty() ? saved : data.value("memory").toObject();
+            conversation_.memory = memory.value("items").toArray();
+            if (!conversation_.memory.isEmpty()) emit serverLogMessage(QStringLiteral("Память"),
+                QStringLiteral("Загружено %1 выдержек этого чата").arg(conversation_.memory.size()));
+            const auto through = memory.value("throughPosition").toDouble();
+            for (const auto& value : data.value("pairs").toArray()) {
+                const auto pair = value.toObject();
+                if (pair.value("position").toDouble() > through)
+                    conversation_.history.push_back({pair.value("question").toString(),pair.value("answer").toString()});
+            }
+            searchQuestion();
+        };
+        if (!plan.isEmpty() && data.value("compactThrough").toDouble() > 0 && !messageId.isEmpty()) {
+            storage_->request("save_conversation_memory", {{"questionId",messageId},{"chatId",activeChatId_},
+                {"baseRevision",data.value("memory").toObject().value("revision")}, {"compactionToken",data.value("compactionToken")},
+                {"contextSize",chatContextSize_},{"selected",plan.value("memory")}}, finish);
+        } else finish({}, {});
+    });
+}
+
+void AssistantService::searchQuestion() {
     if (vectorStore_.empty()) {
         state_ = AssistantState::Generating;
         busy_ = true;
@@ -435,7 +494,7 @@ void AssistantService::startQuestion() {
     state_ = AssistantState::Querying;
     busy_ = true;
     emit busyChanged(true);
-    embeddingClient_->requestEmbedding(pendingQuestion_);
+    embeddingClient_->requestEmbedding(searchQuestion_);
 }
 
 void AssistantService::prepareNextAttachment() {
@@ -475,28 +534,12 @@ void AssistantService::failAttachment(const QString& error) {
 }
 
 void AssistantService::prepareContext(const std::vector<ContextSource>& sources) {
-    GenerationRequest request;
+    GenerationRequest request = conversation_;
     request.question = pendingQuestion_; request.sources = sources;
     for (const auto& path : pendingAttachmentPaths_) request.attachedFiles.append(QFileInfo(path).fileName());
     request.systemStatus = buildSystemStatusContext();
     request.contextSize = chatContextSize_; request.maxAnswerTokens = maxAnswerTokens_;
-    if (requestMessageId_.isEmpty()) {
-        llmClient_->prepare(request);
-        return;
-    }
-    const auto messageId = requestMessageId_;
-    storage_->request("question_history", {{"questionId",messageId},{"chatId",activeChatId_}},
-                      [this,request,messageId](const QJsonObject& data, const QString& error) mutable {
-        if (shuttingDown_ || state_ != AssistantState::Generating || requestMessageId_ != messageId) return;
-        if (error.isEmpty()) {
-            for (const auto& value : data.value("pairs").toArray()) {
-                const auto pair = value.toObject();
-                request.history.push_back({pair.value("question").toString(), pair.value("answer").toString()});
-            }
-            llmClient_->prepare(request);
-        }
-        else { state_ = AssistantState::Idle; busy_ = false; emit busyChanged(isBusy()); emit questionFailed(error); }
-    });
+    llmClient_->prepare(request);
 }
 
 void AssistantService::activateChat(const QString& chatId, std::function<void(const QString&)> callback) {

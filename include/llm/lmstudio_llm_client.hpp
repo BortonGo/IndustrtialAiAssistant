@@ -13,7 +13,7 @@ class LMStudioLLMClient final : public ILLMClient {
     bool preparedReady_ = false;
     quint64 version_ = 0;
     using CompletionCallback = std::function<void(const QString&, const QString&)>;
-    void complete(const QJsonObject& body, CompletionCallback callback);
+    void complete(const QJsonObject& body, CompletionCallback callback, int timeoutOverride = 0);
     void streamAnswer(const QJsonObject& body, CompletionCallback callback);
     void prepareAnswer(const GenerationRequest& request);
 public:
@@ -21,5 +21,7 @@ public:
     explicit LMStudioLLMClient(const ModelApiConfig& config, QObject* parent = nullptr);
 
     void prepare(const GenerationRequest& request) override;
+    void planConversation(const QString& question, const QJsonObject& state, int contextSize, bool followup,
+                          std::function<void(const QJsonObject&, const QString&)> callback) override;
     void generatePrepared() override;
 };

@@ -41,7 +41,7 @@ void LMStudioLLMClient::prepare(const GenerationRequest& original) {
     auto input = original;
     input.statusAccess = SystemStatusAccess::Unresolved;
     const auto request = contextWithoutUnrequestedStatus(input);
-    if (request.sources.empty() && request.history.empty() && request.systemStatus.isEmpty()) {
+    if (request.sources.empty() && request.history.empty() && request.memory.isEmpty() && request.systemStatus.isEmpty()) {
         prepareAnswer(request);
         return;
     }
@@ -62,16 +62,38 @@ void LMStudioLLMClient::prepare(const GenerationRequest& original) {
     }, ContextBuilder::Purpose::Selection);
 }
 
+void LMStudioLLMClient::planConversation(const QString& question, const QJsonObject& state, int contextSize, bool followup,
+                                       std::function<void(const QJsonObject&, const QString&)> callback) {
+    cancelRequests();
+    if (state.value("compactThrough").toDouble() <= 0 && !followup) { callback({}, {}); return; }
+    const auto messages = conversationPlanMessages(question, state, followup);
+    contextBuilder_->countMessages(messages, [this,state,messages,contextSize,followup,callback,question](int tokens, const QString& error) {
+        if (!error.isEmpty()) { callback({},error); return; }
+        if (tokens + 512 + ContextBuilder::safetyTokens > contextSize) {
+            callback({},QStringLiteral("Память: пакет не помещается в окно; сохранена исходная история")); return;
+        }
+        QJsonObject body{{"model",config_.modelName},{"messages",messages},{"stream",false},{"max_tokens",512},{"temperature",0},
+            {"chat_template_kwargs",QJsonObject{{"enable_thinking",false}}},
+            {"response_format",QJsonObject{{"type","json_object"},{"schema",conversationPlanSchema()}}}};
+        complete(body, [state,followup,callback,question](const QString& answer, const QString& failure) {
+            if (!failure.isEmpty()) { callback({},failure); return; }
+            if (qEnvironmentVariableIsSet("LOCAL_ASSISTANT_CONTEXT_DEBUG")) qInfo().noquote() << "Conversation plan:" << answer;
+            try { callback(validateConversationPlan(answer,state,followup,question), {}); }
+            catch (const std::exception& e) { callback({},QString::fromUtf8(e.what())); }
+        }, 60000);
+    });
+}
+
 void LMStudioLLMClient::prepareAnswer(const GenerationRequest& request) {
     const bool hasSystemStatus = !request.systemStatus.isEmpty();
     contextBuilder_->build(request, [this, hasSystemStatus](const PreparedContext& context, const QString& error) {
         if (!error.isEmpty()) { emit errorOccurred(error); return; }
         prepared_ = context; preparedReady_ = true;
         emit contextPrepared(context.sourcesSnapshot,
-            QStringLiteral("Контекст: текст %1, резерв изображений %2, ответ до %3, запас %4 / окно %5; история: %6 пар; источники: %7; MCP: %8")
+            QStringLiteral("Контекст: текст %1, резерв изображений %2, ответ до %3, запас %4 / окно %5; история: %6 пар; источники: %7; MCP: %8; память: %9 выдержек")
                 .arg(context.textTokens).arg(context.imageReserve).arg(context.maxAnswerTokens)
                 .arg(ContextBuilder::safetyTokens).arg(context.contextSize).arg(context.historyPairs).arg(context.sourceCount)
-            .arg(hasSystemStatus ? QStringLiteral("да") : QStringLiteral("нет")), context.sourceReferences);
+            .arg(hasSystemStatus ? QStringLiteral("да") : QStringLiteral("нет")).arg(context.memoryItems), context.sourceReferences);
     });
 }
 
@@ -161,7 +183,7 @@ void LMStudioLLMClient::streamAnswer(const QJsonObject& body, CompletionCallback
     deadline->start(qBound(300000, body.value("max_tokens").toInt(1500) * 250, 1800000));
 }
 
-void LMStudioLLMClient::complete(const QJsonObject& body, CompletionCallback callback) {
+void LMStudioLLMClient::complete(const QJsonObject& body, CompletionCallback callback, int timeoutOverride) {
     const auto version = version_;
     const bool structured = body.contains("response_format");
 
@@ -250,7 +272,7 @@ void LMStudioLLMClient::complete(const QJsonObject& body, CompletionCallback cal
     });
     // A detailed technical answer on CPU/partial GPU offload can take longer than
     // five minutes. Keep a bound, but scale it with the configured output budget.
-    const int timeoutMs = structured ? 300000 : qBound(300000, body.value("max_tokens").toInt(1500) * 250, 1800000);
+    const int timeoutMs = timeoutOverride > 0 ? timeoutOverride : structured ? 300000 : qBound(300000, body.value("max_tokens").toInt(1500) * 250, 1800000);
     timer->start(timeoutMs);
 
 }

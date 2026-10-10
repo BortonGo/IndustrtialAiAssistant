@@ -9,6 +9,8 @@
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QUuid>
+#include <QDebug>
 #include <cstdio>
 #include <stdexcept>
 
@@ -22,6 +24,10 @@ static void waitFor(const std::function<bool()>& condition, int timeout = 180000
 }
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv); app.setApplicationName("HybridSearchTests");
+    qInstallMessageHandler([](QtMsgType type,const QMessageLogContext&,const QString& text){
+        if(type==QtWarningMsg || type==QtCriticalMsg || type==QtFatalMsg || text.startsWith("Conversation plan:") || text.startsWith("Context selection:"))
+            std::fprintf(stderr,"%s\n",text.toUtf8().constData());
+    });
     QDir().mkpath("build-qtcreator/test-artifacts/retrieval");
     QTemporaryDir data("build-qtcreator/test-artifacts/retrieval/service-XXXXXX");
     if (!data.isValid()) return 2;
@@ -37,6 +43,10 @@ int main(int argc, char** argv) {
     QObject::connect(&service, &AssistantService::retrievalReady, [&](const std::vector<VectorStore::SearchResult>& value) { hits = value; });
     QObject::connect(&service, &AssistantService::contextSaved, [&](const QString&, const QString& text) { snapshot = text; });
     QObject::connect(&service, &AssistantService::answerReady, [&](const QString& text) { answer = text; });
+    QObject::connect(&service, &AssistantService::serverLogMessage, [&](const QString& name,const QString& text) {
+        if(name==QStringLiteral("Память") || name==QStringLiteral("Контекст") || name==QStringLiteral("Поиск"))
+            std::fprintf(stderr,"%s: %s\n",name.toUtf8().constData(),text.toUtf8().constData());
+    });
     const auto ready = [&]() { return service.modelsReady() && !service.isBusy() && !chats.isBusy() && chats.currentChat(); };
     const auto check = [&]() { require(error.isEmpty(), qPrintable(error)); };
     const auto query = [&](const QString& question) {
@@ -65,6 +75,9 @@ int main(int argc, char** argv) {
         require(!hits.empty() && hits[0].chunk.text.contains("UZX-417"), "Exact hit not leading in service retrieval");
         require(snapshot.contains("UZX-417") && snapshot.contains("17.25"), "Exact evidence omitted from model context");
         require(QString(answer).replace(',', '.').contains("17.25"), "Wrong pressure in generated answer");
+        query(QStringLiteral("А повтори его рабочее давление?"));
+        require(!hits.empty() && hits[0].chunk.text.contains("UZX-417"), "Follow-up did not resolve before retrieval");
+        require(snapshot.contains("17.25") && QString(answer).replace(',', '.').contains("17.25"), "Follow-up lost grounded pressure");
         // Switching out and back rebuilds the in-memory lexical index from saved entries.
         const auto empty = chats.createChat(); require(!empty.isEmpty(), "New chat failed");
         waitFor([&]() { return !chats.isBusy() && service.isChatReady(empty); });
@@ -76,6 +89,19 @@ int main(int argc, char** argv) {
         require(snapshot.contains("17.25") && snapshot.contains("9.75"), "Comparison context lost a device");
         const auto normalized = QString(answer).replace(',', '.');
         require(normalized.contains("17.25") && normalized.contains("9.75"), "Comparison answer omitted a pressure");
+        const auto storageRequest = [&](const QString& method,const QJsonObject& params) {
+            bool done=false; QJsonObject result;
+            service.storage()->request(method,params,[&](const QJsonObject& value,const QString& failure){result=value;error=failure;done=true;});
+            waitFor([&](){return done;});check();return result;
+        };
+        for(int i=0;i<12;++i) {
+            const auto id=QUuid::createUuid().toString().mid(1,36);
+            const auto text=i==0 ? QStringLiteral("Меня зовут Алексей.") : QStringLiteral("Спасибо за объяснение пункта %1.").arg(i);
+            storageRequest("save_question",{{"id",id},{"chatId",original},{"text",text},{"title","Memory test"}});
+            storageRequest("finish_question",{{"questionId",id},{"id",QUuid::createUuid().toString().mid(1,36)},{"text",QStringLiteral("Принято.")}});
+        }
+        query(QStringLiteral("Как меня зовут?"));
+        require(answer.contains(QStringLiteral("Алексей"),Qt::CaseInsensitive) && !answer.contains("17.25"),"Saved memory lost user's name or leaked document facts");
         result = 0; std::puts("Real models: exact-code retrieval, comparison, saved-index restoration and chat isolation passed");
     } catch (const std::exception& failure) { std::fprintf(stderr, "FAIL: %s\n", failure.what()); }
     service.stopServers();

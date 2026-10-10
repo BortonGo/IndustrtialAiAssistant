@@ -14,6 +14,7 @@ from psycopg.types.json import Jsonb
 from document_comparison import compare_documents
 from document_tables import collect_tables
 from table_export import export_table
+from conversation_memory import memory_candidates
 
 PIPELINE_VERSION = "blocks-v2-image-v2-chunks500-overlap100-utf16"
 PREPROCESSING = "embeddinggemma-raw-text-v1"
@@ -236,21 +237,60 @@ class Repository:
             (params['questionId'],)).fetchone()
         if not question or str(question['chat_id']) != params['chatId']:
             raise ValueError("Вопрос не принадлежит указанному чату или уже завершён")
+        detailed = bool(params.get('withMemory'))
+        row = self.connection.execute('SELECT * FROM conversation_memory WHERE chat_id=%s AND through_position<%s',
+                                      (question['chat_id'], question['position'])).fetchone() if detailed else None
+        memory = dict(revision=row['revision'], throughPosition=row['through_position'], items=row['items']) if row else dict(revision=0, throughPosition=0, items=[])
         pairs = list(self.connection.execute(
-            "SELECT q.text AS question,a.text AS answer,q.id AS question_id FROM messages q "
+            "SELECT q.text AS question,a.text AS answer,q.id AS question_id,q.position,a.id AS answer_id,q.source_references FROM messages q "
             "JOIN messages a ON a.reply_to=q.id AND a.chat_id=q.chat_id "
-            "WHERE q.chat_id=%s AND q.position<%s AND a.position<%s "
+            "WHERE q.chat_id=%s AND q.position<%s AND a.position<%s AND q.position>%s "
             "AND q.role='user' AND a.role='assistant' AND q.status='complete' AND a.status='complete' "
-            "ORDER BY q.position", (question['chat_id'], question['position'], question['position'])))
+            "ORDER BY q.position", (question['chat_id'], question['position'], question['position'], memory['throughPosition'])))
         attached_names = {}
         if pairs:
             for row in self.connection.execute('SELECT message_id,file_name FROM message_attachments WHERE message_id=ANY(%s) ORDER BY position', ([pair['question_id'] for pair in pairs],)):
                 attached_names.setdefault(row['message_id'], []).append(row['file_name'])
         for pair in pairs:
+            question_id = pair['question_id']
+            if detailed:
+                pair['questionId'] = str(question_id)
+                pair['memoryText'] = pair['question']
+                pair['documentIds'] = list(dict.fromkeys(ref['documentId'] for ref in pair['source_references'] if ref.get('documentId')))
+            else:
+                pair.pop('position')
+            pair.pop('answer_id')
+            pair.pop('source_references')
             files = attached_names.get(pair.pop('question_id'), [])
             if files:
                 pair['question'] += '\n[К этому сообщению были прикреплены файлы: ' + ', '.join(files) + ']'
-        return {'pairs': pairs}
+        if not detailed:
+            return {'pairs': pairs}
+        context_size = max(2048, min(int(params.get('contextSize', 8192)), 262144))
+        return dict(pairs=pairs, memory=memory, **memory_candidates(pairs, memory, context_size))
+
+    def save_conversation_memory(self, params):
+        with self.connection.transaction():
+            if not self.connection.execute('SELECT id FROM chats WHERE id=%s FOR UPDATE', (params['chatId'],)).fetchone():
+                raise ValueError('Чат не найден')
+            current = self.connection.execute('SELECT revision FROM conversation_memory WHERE chat_id=%s', (params['chatId'],)).fetchone()
+            if (current['revision'] if current else 0) != params['baseRevision']:
+                raise ValueError('Устаревшая версия памяти чата')
+            state = self.question_history(dict(params, withMemory=True))
+            if state['memory']['revision'] != params['baseRevision'] or state['compactionToken'] != params['compactionToken']:
+                raise ValueError('Память чата изменилась; устаревшее обновление отклонено')
+            selected = params['selected']
+            if (not state['compactThrough'] or not isinstance(selected, list) or len(selected) > 12
+                    or any(type(i) is not int or not 0 <= i < len(state['candidates']) for i in selected)
+                    or len(set(selected)) != len(selected)):
+                raise ValueError('Некорректный выбор памяти')
+            items = [state['candidates'][i] for i in sorted(selected)]
+            if sum(len(item['text'].encode('utf-8')) for item in items) > 6000:
+                raise ValueError('Память превышает допустимый размер')
+            self.connection.execute('INSERT INTO conversation_memory(chat_id,revision,through_position,items) VALUES(%s,%s,%s,%s) '
+                'ON CONFLICT(chat_id) DO UPDATE SET revision=excluded.revision,through_position=excluded.through_position,items=excluded.items,updated_at=now()',
+                (params['chatId'], params['baseRevision'] + 1, state['compactThrough'], Jsonb(items)))
+        return dict(items=items, throughPosition=state['compactThrough'])
 
     def select_chat(self, params):
         if not self.connection.execute("SELECT 1 FROM chats WHERE id=%s", (params['chatId'],)).fetchone():
@@ -547,7 +587,7 @@ class Repository:
     def dispatch(self, method, params):
         if method not in ('bootstrap', 'create_chat', 'delete_chat', 'select_chat', 'question_history', 'save_question', 'save_context', 'finish_question', 'save_document', 'load_chat', 'bind_attachment',
                           'enqueue_import', 'list_imports', 'start_import', 'update_import', 'checkpoint_import', 'advance_import', 'compare_documents',
-                          'document_tables', 'export_document_table'):
+                          'document_tables', 'export_document_table', 'save_conversation_memory'):
             raise ValueError("Неизвестная операция хранилища")
         return getattr(self, method)(params)
 

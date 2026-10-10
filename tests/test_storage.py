@@ -489,6 +489,52 @@ class StorageTests(unittest.TestCase):
         self.repo.load_chat({'chatId': a, 'remember': False})
         self.assertEqual(self.repo.bootstrap({})['currentChatId'], b)
 
+    def memory_fixture(self):
+        chat = self.chat()
+        for i in range(12):
+            q = str(uuid.uuid4())
+            text = 'Меня зовут Алексей.' if i == 0 else f'Сообщение пользователя {i}'
+            self.repo.save_question(dict(id=q, chatId=chat, text=text, title='Память'))
+            self.repo.finish_question(dict(questionId=q, id=str(uuid.uuid4()), text='Ответ ассистента: НЕ СОХРАНЯТЬ'))
+        current = str(uuid.uuid4())
+        self.repo.save_question(dict(id=current, chatId=chat, text='Как меня зовут?', title='Память'))
+        return dict(questionId=current, chatId=chat, withMemory=True, contextSize=8192)
+
+    def test_memory_is_grounded_atomic_isolated_and_deleted_with_chat(self):
+        request = self.memory_fixture()
+        state = self.repo.question_history(request)
+        self.assertEqual(len(state['pairs']), 12)
+        params = dict(request, baseRevision=0, compactionToken=state['compactionToken'], selected=[0])
+        saved = self.repo.dispatch('save_conversation_memory', params)
+        self.assertEqual(saved['items'][0]['text'], 'Меня зовут Алексей.')
+        after = self.repo.question_history(request)
+        self.assertEqual(after['memory']['revision'], 1)
+        self.assertEqual(len(after['pairs']), 8)
+        # Full conversation remains in storage, including messages omitted from memory.
+        self.assertEqual(len(self.repo.question_history(dict(request, withMemory=False))['pairs']), 12)
+        with self.assertRaises(ValueError):
+            self.repo.save_conversation_memory(params)  # stale retry cannot overwrite newer memory
+        with self.assertRaises(ValueError):
+            self.repo.question_history(dict(request, chatId=self.chat()))
+        # A new Repository connection sees the durable memory (simulated restart).
+        from psycopg.rows import dict_row
+        import psycopg
+        with psycopg.connect(**self.options, row_factory=dict_row) as connection:
+            stored = connection.execute('SELECT items FROM conversation_memory WHERE chat_id=%s', (request['chatId'],)).fetchone()
+            self.assertEqual(stored['items'], saved['items'])
+        self.repo.finish_question(dict(questionId=request['questionId'], error='Отмена'))
+        self.repo.delete_chat(dict(chatId=request['chatId']))
+        self.assertIsNone(self.repo.connection.execute('SELECT 1 FROM conversation_memory WHERE chat_id=%s', (request['chatId'],)).fetchone())
+
+    def test_memory_rejects_fabricated_ids_without_advancing_checkpoint(self):
+        request = self.memory_fixture()
+        before = self.repo.question_history(request)
+        for selected in ([999], [0, 0], [False], ['0']):
+            with self.subTest(selected=selected), self.assertRaises(ValueError):
+                self.repo.save_conversation_memory(dict(request, baseRevision=0,
+                    compactionToken=before['compactionToken'], selected=selected))
+        self.assertEqual(self.repo.question_history(request), before)
+
     def test_delete_cascades_and_keeps_shared_images_and_original_files(self):
         a, b = self.chat(), self.chat()
         first, entries = self.document()
