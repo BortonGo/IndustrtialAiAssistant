@@ -4,6 +4,7 @@
 #include "ui/document_comparison_dialog.hpp"
 #include "ui/document_tables_dialog.hpp"
 #include "ui/document_library_dialog.hpp"
+#include "ui/storage_usage_dialog.hpp"
 #include "ui/chat_widget.hpp"
 #include "ui/sidebar_widget.hpp"
 #include "assistant_service.hpp"
@@ -189,6 +190,10 @@ MainWindow::MainWindow(QWidget *parent) :
     };
     connect(documentsPage,&DocumentsWidget::libraryRequested,this,[openLibrary](){openLibrary({});});
     connect(documentsPage,&DocumentsWidget::publishLibraryRequested,this,openLibrary);
+    connect(documentsPage,&DocumentsWidget::storageUsageRequested,this,[this,service]() {
+        if(auto* existing=findChild<QDialog*>("storageUsage")) { existing->show(); existing->raise(); existing->activateWindow(); return; }
+        auto* dialog=new StorageUsageDialog(service->storage(),this); dialog->show();
+    });
     connect(service->imports(), &DocumentImportQueue::changed, this, updateImports);
     connect(chatManager, &ChatManager::currentChatChanged, this, updateImports);
     connect(documentsPage, &DocumentsWidget::importActionRequested, service->imports(), &DocumentImportQueue::control);

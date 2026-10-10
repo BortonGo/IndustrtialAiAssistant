@@ -11,6 +11,8 @@
 #include "ui/document_comparison_dialog.hpp"
 #include "ui/document_tables_dialog.hpp"
 #include "ui/document_library_dialog.hpp"
+#include "ui/storage_usage_dialog.hpp"
+#include <QLabel>
 #include "documents/document_list_model.hpp"
 #include <QApplication>
 #include <QDir>
@@ -309,6 +311,33 @@ int main(int argc, char** argv) {
         std::fprintf(stderr,"Library: deletion and cancellation passed\n");
         // Later source-panel fixtures reuse this original path.
         { QFile file(source); require(file.open(QIODevice::WriteOnly),"Cannot restore source fixture"); file.write("Document text"); }
+
+        // Storage inspection, cancellation, confirmed cleanup and closing mid-request.
+        QDir().mkpath(data.path()+"/images");
+        const auto orphan=data.path()+"/images/"+QString(64,'e')+".png";
+        { QFile file(orphan); require(file.open(QIODevice::WriteOnly),"Cannot create orphan image fixture"); file.write("orphan image"); }
+        QPointer<StorageUsageDialog> storageDialog=new StorageUsageDialog(service.storage(),&window);
+        storageDialog->show();
+        auto* cleanup=storageDialog->findChild<QPushButton*>("cleanupStorage");
+        auto* refresh=storageDialog->findChild<QPushButton*>("refreshStorageUsage");
+        waitFor([&](){return refresh->isEnabled();});
+        require(cleanup->isEnabled(),"Orphan cleanup is not available");
+        require(!storageDialog->findChild<QLabel*>("storageCounts")->text().isEmpty(),"Storage counts are missing");
+        storageDialog->grab().save("build-qtcreator/storage-usage-preview.png");
+        cleanup->click();
+        QPointer<QDialog> cleanupConfirmation=storageDialog->findChild<QDialog*>("storageCleanupConfirmation");
+        require(cleanupConfirmation && !cleanup->isEnabled(),"Storage cleanup lacks confirmation or allows double submission");
+        cleanupConfirmation->reject(); waitFor([&](){return !cleanupConfirmation && cleanup->isEnabled();});
+        require(QFile::exists(orphan),"Cancelled cleanup removed a file");
+        cleanup->click(); cleanupConfirmation=storageDialog->findChild<QDialog*>("storageCleanupConfirmation");
+        cleanupConfirmation->findChild<QPushButton*>("confirmStorageCleanup")->click();
+        waitFor([&](){return refresh->isEnabled();});
+        require(!QFile::exists(orphan),"Confirmed cleanup left an orphan file");
+        require(QFile::exists(source) && service.documentManager()->documentCount()==1,"Storage cleanup damaged original or document");
+        require(storageDialog->findChild<QLabel*>("storageUsageStatus")->text().contains(QStringLiteral("Освобождено")),"Cleanup result is missing");
+        refresh->click(); storageDialog->close(); waitFor([&](){return !storageDialog;});
+        request(service.storage(),"storage_usage",{}); // Drain request after dialog destruction.
+        std::fprintf(stderr,"Storage: report, cleanup, cancellation and closing passed\n");
 
         // A pending DB question must reject deletion without removing a row in Qt.
         const auto question = QUuid::createUuid().toString().mid(1,36);

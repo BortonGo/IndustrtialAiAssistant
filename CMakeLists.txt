@@ -44,6 +44,7 @@ add_executable(IndustrialAiAssistant src/main.cpp
     include/ui/document_comparison_dialog.hpp src/ui/document_comparison_dialog.cpp
     include/ui/document_tables_dialog.hpp src/ui/document_tables_dialog.cpp
     include/ui/document_library_dialog.hpp src/ui/document_library_dialog.cpp
+    include/ui/storage_usage_dialog.hpp src/ui/storage_usage_dialog.cpp
     include/storage/storage_client.hpp src/storage/storage_client.cpp
     include/storage/storage_codec.hpp src/storage/storage_codec.cpp
     src/ui/mainwindow.ui

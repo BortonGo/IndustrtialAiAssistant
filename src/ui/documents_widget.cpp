@@ -51,6 +51,9 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
     library_ = new QPushButton(QStringLiteral("Из библиотеки")); library_->setObjectName("openDocumentLibrary");
     library_->setToolTip(QStringLiteral("Использовать сохранённые документы без повторной обработки"));
     uploadActions->addWidget(btnAddDocument); uploadActions->addWidget(library_); uploadActions->addStretch();
+    auto* storageUsage = new QPushButton(QStringLiteral("Хранилище")); storageUsage->setObjectName("openStorageUsage");
+    uploadActions->addWidget(storageUsage);
+    connect(storageUsage, &QPushButton::clicked, this, &DocumentsWidget::storageUsageRequested);
     documentsLayout->addLayout(uploadActions);
     auto* documentActions = new QHBoxLayout;
     compare_ = new QPushButton(QStringLiteral("Сравнить два документа"));

@@ -3,7 +3,6 @@ import hashlib
 import json
 import math
 import os
-import re
 from pathlib import Path
 import uuid
 import base64
@@ -16,6 +15,7 @@ from document_tables import collect_tables
 from table_export import export_table
 from conversation_memory import memory_candidates
 from document_library import ACTIONS as LIBRARY_ACTIONS
+from storage_maintenance import ACTIONS as MAINTENANCE_ACTIONS, cleanup_images
 
 PIPELINE_VERSION = "blocks-v2-image-v2-chunks500-overlap100-utf16"
 PREPROCESSING = "embeddinggemma-raw-text-v1"
@@ -155,29 +155,11 @@ class Repository:
                 'warnings': self.cleanup_images(images)}
 
     def cleanup_images(self, images):
-        # DB deletion has committed. Chat/library/source references all protect images.
-        # The worker serializes requests, so no save can interleave this cleanup.
-        warnings = []
-        assets = self.data / 'images'
-        for name in images:
-            if not isinstance(name, str) or not re.fullmatch(r'[0-9a-f]{64}\.png', name):
-                warnings.append('Пропущено изображение с некорректным именем')
-                continue
-            try:
-                if self.connection.execute(
-                        "SELECT 1 FROM document_blocks WHERE payload->>'imagePath'=%s "
-                        "UNION ALL SELECT 1 FROM chunks WHERE metadata->>'imagePath'=%s "
-                        "UNION ALL SELECT 1 FROM message_attachments WHERE preview_image=%s "
-                        "UNION ALL SELECT 1 FROM messages m, jsonb_array_elements(m.source_references) r "
-                        "WHERE r->>'imagePath'=%s LIMIT 1", (name, name, name, name)).fetchone():
-                    continue
-                target = assets / name
-                if assets.is_symlink() or assets.resolve() != self.data.resolve() / 'images' or target.is_symlink():
-                    raise OSError('Путь изображения выходит за папку хранения')
-                target.unlink(missing_ok=True)
-            except (OSError, psycopg.Error) as error:
-                warnings.append(f'Не удалось удалить сохранённую копию {name}: {error}')
-        return warnings
+        # Database deletion has already committed; report file errors separately.
+        try:
+            return cleanup_images(self, images)['warnings']
+        except (OSError, ValueError, psycopg.Error) as error:
+            return [f'Не удалось очистить сохранённые изображения: {error}']
 
     def references_json(self, references):
         return [dict(ref, imagePath=str(self.data / 'images' / Path(ref['imagePath']).name)
@@ -590,6 +572,8 @@ class Repository:
         return dict(data=base64.b64encode(data).decode('ascii'), filename=filename, protectedCells=protected)
 
     def dispatch(self, method, params):
+        if method in MAINTENANCE_ACTIONS:
+            return MAINTENANCE_ACTIONS[method](self, params)
         if method in LIBRARY_ACTIONS:
             return LIBRARY_ACTIONS[method](self, params)
         if method not in ('bootstrap', 'create_chat', 'delete_chat', 'select_chat', 'question_history', 'save_question', 'save_context', 'finish_question', 'save_document', 'load_chat', 'bind_attachment',

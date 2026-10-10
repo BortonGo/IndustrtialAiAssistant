@@ -26,6 +26,7 @@ signals:
     void compareRequested(const QStringList& documentIds);
     void tablesRequested(const QString& documentId);
     void libraryRequested();
+    void storageUsageRequested();
     void publishLibraryRequested(const QString& documentId);
 private:
     QListView* documents_ = nullptr;

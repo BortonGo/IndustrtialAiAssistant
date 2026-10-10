@@ -4,6 +4,7 @@ import base64
 import csv
 import io
 import json
+import hashlib
 from pathlib import Path
 import sys
 import tempfile
@@ -841,6 +842,170 @@ class StorageTests(unittest.TestCase):
         self.assertTrue(Path(job['sourcePath']).exists())
         self.repo.update_import({'id': other['id'], 'status': 'cancelled'})
         self.assertEqual(self.repo.list_imports({})['jobs'], [])
+
+
+    def managed_image(self, label, suffix='.png'):
+        root = self.repo.data / 'images'
+        root.mkdir(exist_ok=True)
+        path = root / (hashlib.sha256(label.encode()).hexdigest() + suffix)
+        path.write_bytes(label.encode())
+        return path
+
+    def empty_managed_images(self):
+        report = self.repo.dispatch('storage_usage', {})
+        self.repo.dispatch('cleanup_storage', {'token': report['cleanupToken']})
+
+    def test_storage_usage_and_cleanup_preserve_documents_and_foreign_files(self):
+        self.empty_managed_images()
+        chat, document, _, library = self.publish_fixture()
+        saved = Path(self.repo.load_chat({'chatId': chat})['documents'][0]['blocks'][0]['imagePath'])
+        unused = self.managed_image('unused image')
+        temporary = self.managed_image('incomplete save', '.tmp')
+        foreign = self.repo.data / 'images' / 'notes.txt'
+        foreign.write_bytes(b'not owned')
+        try:
+            report = self.repo.dispatch('storage_usage', {})
+            self.assertGreater(report['databaseBytes'], 0)
+            self.assertGreaterEqual(report['clusterBytes'], report['databaseBytes'])
+            self.assertGreater(report['freeBytes'], 0)
+            self.assertEqual(report['totalBytes'], report['clusterBytes'] + report['imageBytes'] + report['otherBytes'])
+            self.assertEqual(report['counts'], dict(chats=1, documents=1, library=1, chunks=2, imports=0))
+            self.assertEqual(report['reclaimableFiles'], 2)
+            expected = unused.stat().st_size + temporary.stat().st_size
+            self.assertEqual(report['reclaimableBytes'], expected)
+            result = self.repo.dispatch('cleanup_storage', dict(token=report['cleanupToken']))
+            self.assertEqual(result, dict(deletedFiles=2, freedBytes=expected, warnings=[]))
+            self.assertFalse(unused.exists()); self.assertFalse(temporary.exists())
+            self.assertTrue(saved.exists()); self.assertTrue(foreign.exists())
+            self.assertTrue(Path(document['sourcePath']).exists())
+            self.assertTrue((self.repo.data / 'postgres' / 'PG_VERSION').exists())
+            self.assertEqual(len(self.repo.load_chat({'chatId': chat})['entries']), 1)
+            self.assertEqual(self.repo.dispatch('list_library', {})['items'][0]['id'], library)
+        finally:
+            foreign.unlink(missing_ok=True)
+
+    def test_storage_cleanup_protects_all_image_owners_and_paused_checkpoint(self):
+        from psycopg.types.json import Jsonb
+        self.empty_managed_images()
+        chat, document, _, library = self.publish_fixture()
+        saved = Path(self.repo.load_chat({'chatId': chat})['documents'][0]['blocks'][0]['imagePath'])
+        # Library becomes the only owner of this original image.
+        block_only, chunk_only = self.managed_image('block only'), self.managed_image('chunk only')
+        self.repo.connection.execute("UPDATE document_blocks SET payload=jsonb_set(payload,'{imagePath}',to_jsonb(%s::text)) WHERE document_id=%s", (block_only.name, document['id']))
+        self.repo.connection.execute("UPDATE chunks SET metadata=jsonb_set(metadata,'{imagePath}',to_jsonb(%s::text)) WHERE document_id=%s", (chunk_only.name, document['id']))
+        citation, preview = self.managed_image('old citation'), self.managed_image('attachment preview')
+        message = uuid.uuid4()
+        self.repo.connection.execute("INSERT INTO messages(id,chat_id,role,text,status,source_references) VALUES(%s,%s,'user','old question','complete',%s)",
+                                     (message, chat, Jsonb([{'imagePath': citation.name}])))
+        self.repo.connection.execute("INSERT INTO message_attachments(message_id,position,file_name,source_path,preview_image) VALUES(%s,0,'preview.png','original.png',%s)", (message, preview.name))
+        job, pending_doc, entries = self.import_job()
+        checkpoint, pending_chunk = self.managed_image('checkpoint block'), self.managed_image('checkpoint chunk')
+        pending_doc['blocks'][0]['imagePath'] = str(checkpoint)
+        entries[0]['chunk']['imagePath'] = str(pending_chunk)
+        self.repo.start_import({'id': job['id']})
+        self.repo.checkpoint_import(dict(id=job['id'], document=pending_doc, entries=entries, offset=0, progress='checkpoint'))
+        self.repo.update_import(dict(id=job['id'], status='paused'))
+        unused = self.managed_image('not referenced anywhere')
+        report = self.repo.dispatch('storage_usage', {})
+        self.assertEqual(report['blockedReason'], '')
+        self.assertEqual(report['reclaimableFiles'], 1)
+        self.repo.dispatch('cleanup_storage', dict(token=report['cleanupToken']))
+        self.assertFalse(unused.exists())
+        for path in (saved, block_only, chunk_only, citation, preview, checkpoint, pending_chunk):
+            self.assertTrue(path.exists(), path)
+        self.repo.update_import(dict(id=job['id'], status='queued'))
+        resumed = self.repo.start_import(dict(id=job['id']))['job']['checkpoint']
+        self.assertEqual(resumed['document'], pending_doc)
+        self.assertEqual(resumed['entries'], entries)
+
+    def test_storage_cleanup_revalidates_preview_and_excludes_new_files(self):
+        from psycopg.types.json import Jsonb
+        self.empty_managed_images()
+        referenced_later = self.managed_image('acquires reference')
+        changed = self.managed_image('changes after preview')
+        unused = self.managed_image('still unused')
+        report = self.repo.dispatch('storage_usage', {})
+        chat = self.chat()
+        self.repo.connection.execute("INSERT INTO messages(id,chat_id,role,text,status,source_references) VALUES(%s,%s,'user','question','complete',%s)",
+                                    (uuid.uuid4(), chat, Jsonb([{'imagePath': referenced_later.name}])))
+        changed.write_bytes(b'new content with different size')
+        added_later = self.managed_image('appeared after preview')
+        result = self.repo.dispatch('cleanup_storage', dict(token=report['cleanupToken']))
+        self.assertEqual(result['deletedFiles'], 1)
+        self.assertTrue(result['warnings'])
+        self.assertFalse(unused.exists())
+        for path in (referenced_later, changed, added_later):
+            self.assertTrue(path.exists())
+        with self.assertRaisesRegex(ValueError, 'устарел'):
+            self.repo.dispatch('cleanup_storage', dict(token=report['cleanupToken']))
+
+    def test_storage_cleanup_refuses_busy_jobs_stale_and_invalid_tokens(self):
+        self.empty_managed_images()
+        unused = self.managed_image('busy cleanup fixture')
+        old = self.repo.dispatch('storage_usage', {})
+        report = self.repo.dispatch('storage_usage', {})
+        for token in (old['cleanupToken'], '../images', '', None):
+            with self.assertRaisesRegex(ValueError, 'устарел'):
+                self.repo.dispatch('cleanup_storage', dict(token=token))
+        job, _, _ = self.import_job()
+        with self.assertRaisesRegex(ValueError, 'приостановите'):
+            self.repo.dispatch('cleanup_storage', dict(token=report['cleanupToken']))
+        self.assertTrue(unused.exists())
+        self.repo.start_import(dict(id=job['id']))
+        report = self.repo.dispatch('storage_usage', {})
+        self.assertTrue(report['blockedReason'])
+        self.repo.update_import(dict(id=job['id'], status='paused'))
+        question = str(uuid.uuid4())
+        self.repo.save_question(dict(id=question, chatId=job['chatId'], text='test', title='test'))
+        with self.assertRaisesRegex(ValueError, 'ответа'):
+            self.repo.dispatch('cleanup_storage', dict(token=report['cleanupToken']))
+        self.assertTrue(unused.exists())
+
+    def test_storage_cleanup_reports_locked_file_without_removing_other_data(self):
+        self.empty_managed_images()
+        locked = self.managed_image('locked fixture')
+        unused = self.managed_image('unlocked fixture')
+        report = self.repo.dispatch('storage_usage', {})
+        unlink = Path.unlink
+        def remove(path, *args, **kwargs):
+            if path == locked:
+                raise PermissionError('file locked by fixture')
+            return unlink(path, *args, **kwargs)
+        with patch.object(Path, 'unlink', remove):
+            result = self.repo.dispatch('cleanup_storage', dict(token=report['cleanupToken']))
+        self.assertEqual(result['deletedFiles'], 1)
+        self.assertEqual(result['freedBytes'], len(b'unlocked fixture'))
+        self.assertTrue(result['warnings'])
+        self.assertTrue(locked.exists()); self.assertFalse(unused.exists())
+
+    def test_storage_cleanup_skips_file_links_and_reparse_directories(self):
+        from storage_maintenance import _linked
+        from types import SimpleNamespace
+        import stat
+        self.empty_managed_images()
+        linked = self.managed_image('link fixture')
+        original_stat = Path.lstat
+        def file_info(path, *args, **kwargs):
+            if path == linked:
+                return SimpleNamespace(st_mode=stat.S_IFLNK, st_file_attributes=0x400)
+            return original_stat(path, *args, **kwargs)
+        with patch.object(Path, 'lstat', file_info):
+            report = self.repo.dispatch('storage_usage', {})
+            self.assertTrue(report['approximate'])
+            self.assertEqual(report['reclaimableFiles'], 0)
+            self.repo.dispatch('cleanup_storage', dict(token=report['cleanupToken']))
+        self.assertTrue(linked.exists())
+        self.assertTrue(_linked(SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)))
+        root = self.repo.data / 'images'
+        def directory_info(path, *args, **kwargs):
+            if path == root:
+                return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+            return original_stat(path, *args, **kwargs)
+        report = self.repo.dispatch('storage_usage', {})
+        with patch.object(Path, 'lstat', directory_info):
+            with self.assertRaisesRegex(ValueError, 'ссылкой'):
+                self.repo.dispatch('cleanup_storage', dict(token=report['cleanupToken']))
+        self.assertTrue(linked.exists())
 
 
 if __name__ == '__main__':
