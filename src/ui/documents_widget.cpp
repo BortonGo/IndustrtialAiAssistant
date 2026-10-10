@@ -47,13 +47,20 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
     btnAddDocument->setIcon(UiStyle::icon(UiStyle::Icon::Plus));
     btnAddDocument->setStyleSheet("QPushButton { border: 1px solid #363739; padding: 8px 12px; }");
     uploadButton_ = btnAddDocument;
+    auto* uploadActions = new QHBoxLayout;
+    library_ = new QPushButton(QStringLiteral("Из библиотеки")); library_->setObjectName("openDocumentLibrary");
+    library_->setToolTip(QStringLiteral("Использовать сохранённые документы без повторной обработки"));
+    uploadActions->addWidget(btnAddDocument); uploadActions->addWidget(library_); uploadActions->addStretch();
+    documentsLayout->addLayout(uploadActions);
     auto* documentActions = new QHBoxLayout;
     compare_ = new QPushButton(QStringLiteral("Сравнить два документа"));
     compare_->setObjectName("compareDocuments");
     compare_->setToolTip(QStringLiteral("Выберите два обработанных документа с зажатым Ctrl"));
     tables_ = new QPushButton(QStringLiteral("Таблицы и экспорт")); tables_->setObjectName("documentTablesButton");
     tables_->setToolTip(QStringLiteral("Выберите один обработанный документ"));
-    documentActions->addWidget(btnAddDocument); documentActions->addWidget(compare_); documentActions->addWidget(tables_); documentActions->addStretch();
+    publish_ = new QPushButton(QStringLiteral("В библиотеку")); publish_->setObjectName("publishLibraryDocument");
+    publish_->setToolTip(QStringLiteral("Сохранить выбранную готовую версию для других чатов"));
+    documentActions->addWidget(publish_); documentActions->addWidget(compare_); documentActions->addWidget(tables_); documentActions->addStretch();
     documentsLayout->addLayout(documentActions);
 
     importsLabel_ = new QLabel(QStringLiteral("Очередь обработки · можно задавать вопросы во время импорта"));
@@ -129,12 +136,17 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
         const auto selected = documents_->selectionModel()->selectedRows();
         if (tables_->isEnabled() && selected.size() == 1) emit tablesRequested(selected.first().data(Qt::UserRole).toString());
     });
+    connect(library_, &QPushButton::clicked, this, &DocumentsWidget::libraryRequested);
+    connect(publish_, &QPushButton::clicked, this, [this]() {
+        const auto selected = documents_->selectionModel()->selectedRows();
+        if (publish_->isEnabled() && selected.size() == 1) emit publishLibraryRequested(selected.first().data(Qt::UserRole).toString());
+    });
 
     connect(btnAddDocument, &QPushButton::clicked,
             this, &DocumentsWidget::documentUploadRequested);
 }
 
-void DocumentsWidget::setUploadEnabled(bool enabled) { uploadButton_->setEnabled(enabled); }
+void DocumentsWidget::setUploadEnabled(bool enabled) { uploadButton_->setEnabled(enabled); library_->setEnabled(enabled); }
 
 void DocumentsWidget::setComparisonEnabled(bool enabled) {
     comparisonEnabled_ = enabled; updateComparisonAction();
@@ -146,6 +158,7 @@ void DocumentsWidget::updateComparisonAction() {
     for (const auto& index : selected) ready = ready && index.data(DocumentListModel::ComparisonReadyRole).toBool();
     compare_->setEnabled(ready && selected.size() == 2);
     tables_->setEnabled(ready && selected.size() == 1);
+    publish_->setEnabled(comparisonEnabled_ && selected.size() == 1 && selected.first().data(DocumentListModel::LibraryReadyRole).toBool());
 }
 
 void DocumentsWidget::setImportJobs(const QJsonArray& jobs, const QString& chatId) {

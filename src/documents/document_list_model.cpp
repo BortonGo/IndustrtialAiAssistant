@@ -23,7 +23,7 @@ DocumentListModel::DocumentListModel(DocumentManager* manager, QObject* parent)
             auto* document = manager_->documentAt(row);
             if (document->id == documentId) {
                 const QModelIndex idx = index(row, 0);
-                emit dataChanged(idx, idx, {Qt::DisplayRole, ComparisonReadyRole});
+                emit dataChanged(idx, idx, {Qt::DisplayRole, ComparisonReadyRole, LibraryReadyRole});
                 break;
             }
         }
@@ -52,6 +52,8 @@ QVariant DocumentListModel::data(const QModelIndex& index, int role) const {
         return QFileInfo(document->sourcePath).fileName() + " · " + Document::statusToQString(document->status);
     } else if (role == Qt::UserRole) {
         return document->id;
+    } else if (role == LibraryReadyRole) {
+        return document->pendingImages == 0 && (document->status == DocumentStatus::Ready || document->status == DocumentStatus::ReadyWithWarnings);
     } else if (role == ComparisonReadyRole) {
         return document->status == DocumentStatus::Ready || document->status == DocumentStatus::ReadyWithWarnings ||
                document->status == DocumentStatus::TextReady;

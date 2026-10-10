@@ -10,6 +10,7 @@
 #include "ui/documents_widget.hpp"
 #include "ui/document_comparison_dialog.hpp"
 #include "ui/document_tables_dialog.hpp"
+#include "ui/document_library_dialog.hpp"
 #include "documents/document_list_model.hpp"
 #include <QApplication>
 #include <QDir>
@@ -31,6 +32,7 @@
 #include <QToolButton>
 #include <QTextBrowser>
 #include <QPushButton>
+#include <QLineEdit>
 #include <QClipboard>
 #include <QKeyEvent>
 #include <QMimeData>
@@ -66,6 +68,7 @@ QJsonObject request(StorageClient* storage, const QString& method, const QJsonOb
 }
 
 int main(int argc, char** argv) {
+    std::setvbuf(stderr,nullptr,_IONBF,0);
     QApplication app(argc, argv);
     qInstallMessageHandler([](QtMsgType type, const QMessageLogContext&, const QString& message) {
         if (type != QtDebugMsg) std::fprintf(stderr, "%s\n", message.toUtf8().constData());
@@ -119,6 +122,7 @@ int main(int argc, char** argv) {
         documentsPage.setComparisonEnabled(true);
         auto* compareButton = documentsPage.findChild<QPushButton*>("compareDocuments");
         auto* tablesButton = documentsPage.findChild<QPushButton*>("documentTablesButton");
+        auto* publishButton = documentsPage.findChild<QPushButton*>("publishLibraryDocument");
         QString tablesDocumentId;
         QObject::connect(&documentsPage, &DocumentsWidget::tablesRequested, [&](const QString& id) { tablesDocumentId = id; });
         auto* documentList = documentsPage.findChild<QListView*>("chatDocuments");
@@ -126,11 +130,12 @@ int main(int argc, char** argv) {
             documentList->selectionModel()->select(previewModel.index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
         };
         require(!compareButton->isEnabled(), "Comparison allowed with no selection");
-        auto secondDocument = previewDocument; secondDocument.id = "second"; secondDocument.status = DocumentStatus::Ready;
+        auto secondDocument = previewDocument; secondDocument.id = "second"; secondDocument.status = DocumentStatus::Ready; secondDocument.pendingImages=0;
         auto thirdDocument = secondDocument; thirdDocument.id = "third";
         previewManager.restore({previewDocument, secondDocument, thirdDocument});
         selectDocument(1); require(!compareButton->isEnabled(), "Comparison allowed with one document");
         require(tablesButton->isEnabled(), "Tables unavailable for a selected ready document");
+        require(publishButton->isEnabled(), "Ready document cannot be published to the library");
         tablesButton->click(); require(tablesDocumentId == "second", "Table viewer has wrong document ID");
         selectDocument(0); require(compareButton->isEnabled(), "Partial text and ready document cannot be compared");
         require(!tablesButton->isEnabled(), "Tables enabled with ambiguous document selection");
@@ -146,6 +151,8 @@ int main(int argc, char** argv) {
         require(compareButton->isEnabled(), "Readiness change did not enable comparison");
         selectDocument(2); require(!compareButton->isEnabled(), "Comparison allowed with three documents");
         previewManager.restore({previewDocument});
+        selectDocument(0); require(!publishButton->isEnabled(), "Partial OCR result can be published to the library");
+        documentList->clearSelection();
         require(!compareButton->isEnabled() && documentList->selectionModel()->selectedRows().isEmpty(), "Chat reload retained comparison selection");
         require(!tablesButton->isEnabled(), "Chat reload retained table action");
         QJsonArray importJobs{
@@ -249,10 +256,59 @@ int main(int argc, char** argv) {
         service.activateChat(c, [&](const QString& error) { failure = error; loaded = true; });
         waitFor([&]() { return loaded; });
         require(failure.isEmpty() && service.documentManager()->documentCount() == 1, "Document seed not restored");
+        // Publish through the real UI, then remove its owner chat.
+        QPointer<DocumentLibraryDialog> library=new DocumentLibraryDialog(&service,c,docId,&window);
+        library->show();
+        auto* libraryList=library->findChild<QListWidget*>("libraryDocuments");
+        waitFor([&](){return libraryList->count()==1 && libraryList->isEnabled();});
+        const auto libraryId=libraryList->item(0)->data(Qt::UserRole).toString();
+        library->grab().save("build-qtcreator/library-preview.png");
+        std::fprintf(stderr,"Library: publication passed\n");
+        library->close(); waitFor([&](){return !library;});
+        std::fprintf(stderr,"Library: first close passed\n");
         require(chats.deleteChat(c), "Current chat deletion rejected");
         waitFor([&]() { return !chats.isBusy() && service.isChatReady(b); });
         require(chats.currentChat()->id == b && model.rowCount() == 1 &&
                 service.documentManager()->documentCount() == 0 && QFile::exists(source), "Chat/document deletion corrupted workspace or source");
+
+        require(QFile::remove(source), "Cannot remove original library fixture");
+        std::fprintf(stderr,"Library: source deletion passed\n");
+        library=new DocumentLibraryDialog(&service,b,{},&window); library->show();
+        libraryList=library->findChild<QListWidget*>("libraryDocuments");
+        auto* librarySearch=library->findChild<QLineEdit*>("librarySearch");
+        auto* libraryAdd=library->findChild<QPushButton*>("attachLibraryDocuments");
+        waitFor([&](){return libraryList->count()==1 && libraryList->isEnabled();});
+        librarySearch->setText("no-such-file"); waitFor([&](){return libraryList->count()==0 && librarySearch->isEnabled();});
+        librarySearch->clear(); waitFor([&](){return libraryList->count()==1 && librarySearch->isEnabled();});
+        std::fprintf(stderr,"Library: search passed\n");
+        libraryList->item(0)->setSelected(true); require(libraryAdd->isEnabled(), "Library attach unavailable with models stopped");
+        libraryAdd->click();
+        waitFor([&](){return !service.isBusy() && service.documentManager()->documentCount()==1 && libraryList->isEnabled();});
+        require(service.documentManager()->documentAt(0)->text=="Document text", "Saved library content not restored");
+        require(service.documentManager()->documentAt(0)->id!=docId && service.documentManager()->documentAt(0)->id!=libraryId, "Library copy reused another owner's ID");
+        std::fprintf(stderr,"Library: attachment passed\n");
+        // Closing during an async request must not leave callbacks pointing at deleted widgets.
+        libraryAdd->click(); library->close(); waitFor([&](){return !library && !service.isBusy();});
+        require(service.documentManager()->documentCount()==1, "Reattaching duplicated the document");
+        std::fprintf(stderr,"Library: closing during attach passed\n");
+        library=new DocumentLibraryDialog(&service,b,{},&window); library->show();
+        libraryList=library->findChild<QListWidget*>("libraryDocuments");
+        waitFor([&](){return libraryList->count()==1 && libraryList->isEnabled();}); libraryList->item(0)->setSelected(true);
+        std::fprintf(stderr,"Library: opening delete confirmation\n");
+        library->findChild<QPushButton*>("deleteLibraryDocument")->click();
+        QPointer<QDialog> confirmation=library->findChild<QDialog*>("removeLibraryConfirmation");
+        require(confirmation && confirmation->findChild<QPushButton*>("confirmLibraryDeletion"),"Library deletion lacks confirmation");
+        confirmation->reject(); waitFor([&](){return !confirmation && libraryList->isEnabled();});
+        require(libraryList->count()==1,"Cancelling library deletion removed a document");
+        library->findChild<QPushButton*>("deleteLibraryDocument")->click();
+        confirmation=library->findChild<QDialog*>("removeLibraryConfirmation");
+        confirmation->findChild<QPushButton*>("confirmLibraryDeletion")->click();
+        waitFor([&](){return libraryList->count()==0 && libraryList->isEnabled();});
+        require(service.documentManager()->documentCount()==1, "Deleting the library removed a chat copy");
+        library->close(); waitFor([&](){return !library;});
+        std::fprintf(stderr,"Library: deletion and cancellation passed\n");
+        // Later source-panel fixtures reuse this original path.
+        { QFile file(source); require(file.open(QIODevice::WriteOnly),"Cannot restore source fixture"); file.write("Document text"); }
 
         // A pending DB question must reject deletion without removing a row in Qt.
         const auto question = QUuid::createUuid().toString().mid(1,36);

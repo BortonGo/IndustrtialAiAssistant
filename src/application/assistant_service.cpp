@@ -146,7 +146,7 @@ AssistantService::AssistantService(QObject *parent) : QObject(parent) {
         emit serverLogMessage(QStringLiteral("Импорт"), file + QStringLiteral(": доступная часть сохранена для поиска"));
     });
     connect(this, &AssistantService::busyChanged, this, [this]() {
-        imports_->setForegroundActive(state_ != AssistantState::Idle || busy_);
+        imports_->setForegroundActive(state_ != AssistantState::Idle || busy_ || attachingLibrary_);
     });
 
     connect(embeddingClient_, &EmbeddingClient::errorOccurred,
@@ -354,7 +354,7 @@ bool AssistantService::askQuestion(const QString &question, const QString& messa
     if (state_ != AssistantState::Idle) {
         return false;
     }
-    if (busy_) {
+    if (busy_ || attachingLibrary_) {
         return false;
     }
     requestMessageId_ = messageId;
@@ -397,13 +397,31 @@ void AssistantService::continuePendingQuestion() {
         });
 }
 
-void AssistantService::reloadImportedDocuments(const QString& chatId) {
+void AssistantService::attachLibraryDocuments(const QString& chatId, const QStringList& ids, std::function<void(const QString&)> callback) {
+    if (shuttingDown_ || !storage_->isReady() || !isChatReady(chatId) || isBusy()) {
+        callback(QStringLiteral("Дождитесь завершения текущей операции и повторите добавление")); return;
+    }
+    attachingLibrary_ = true; emit busyChanged(true);
+    QJsonArray selected; for (const auto& id : ids) selected.append(id);
+    storage_->request("attach_library_documents", {{"chatId",chatId},{"libraryIds",selected}},
+        [this,chatId,callback](const QJsonObject&,const QString& error) {
+        if (shuttingDown_) return;
+        const auto finish = [this,callback](const QString& failure) {
+            attachingLibrary_ = false; emit busyChanged(isBusy()); callback(failure); tryStartNextDocument();
+        };
+        if (!error.isEmpty()) { finish(error); return; }
+        reloadImportedDocuments(chatId, finish);
+    });
+}
+
+void AssistantService::reloadImportedDocuments(const QString& chatId, std::function<void(const QString&)> callback) {
     const auto version = selectionVersion_;
     const bool visible = visibleChatId_ == chatId;
     if (visible) { loadingChat_ = true; emit busyChanged(isBusy()); }
     storage_->request("load_chat", {{"chatId",chatId},{"remember",false}},
-        [this,chatId,version,visible](const QJsonObject& data, const QString& error) {
+        [this,chatId,version,visible,callback](const QJsonObject& data, const QString& error) {
         if (shuttingDown_) return;
+        QString failure;
         try {
             if (!error.isEmpty()) throw std::runtime_error(error.toUtf8().constData());
             std::vector<Document> documents;
@@ -416,9 +434,10 @@ void AssistantService::reloadImportedDocuments(const QString& chatId) {
             if (version == selectionVersion_ && visibleChatId_ == chatId) {
                 visibleDocuments_->restore(std::move(documents)); visibleIndex_ = std::move(index);
             }
-        } catch (const std::exception& failure) { emit errorOccurred(QString::fromUtf8(failure.what())); }
+        } catch (const std::exception& e) { failure = QString::fromUtf8(e.what()); if (!callback) emit errorOccurred(failure); }
         if (visible && version == selectionVersion_) loadingChat_ = false;
         emit busyChanged(isBusy());
+        if (callback) callback(failure);
     });
 }
 
@@ -694,7 +713,7 @@ void AssistantService::finishDocumentIndexing(bool success) {
 }
 
 void AssistantService::tryStartNextDocument() {
-    if (state_ != AssistantState::Idle || !modelsReady()) {
+    if (state_ != AssistantState::Idle || attachingLibrary_ || !modelsReady()) {
         return;
     }
     while (!indexingQueue_.empty()) {
@@ -755,7 +774,7 @@ bool AssistantService::modelsReady() const
 
 bool AssistantService::isBusy() const
 {
-    return busy_ || state_ != AssistantState::Idle || loadingChat_;
+    return busy_ || state_ != AssistantState::Idle || loadingChat_ || attachingLibrary_;
 }
 
 QString AssistantService::chatServerStatus() const { return chatServerStatus_; }

@@ -44,6 +44,7 @@ class StorageTests(unittest.TestCase):
     def setUp(self):
         # This cluster was created by setUpClass inside a fresh temporary directory.
         self.repo.connection.execute('TRUNCATE chats CASCADE')
+        self.repo.connection.execute('DELETE FROM documents WHERE chat_id IS NULL')
         self.repo.connection.execute('DELETE FROM app_settings')
 
     def document(self):
@@ -68,6 +69,96 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(first['documents'][0]['id'], document['id'])
         self.assertTrue(Path(first['documents'][0]['blocks'][0]['imagePath']).is_file())
         self.assertEqual(second, {'documents': [], 'entries': []})
+
+    def publish_fixture(self, chat=None):
+        chat = chat or self.chat()
+        document, entries = self.document()
+        self.repo.save_document(dict(chatId=chat, document=copy.deepcopy(document), entries=entries))
+        published = self.repo.dispatch('publish_library_document', dict(chatId=chat, documentId=document['id']))
+        return chat, document, entries, published['id']
+
+    def test_library_survives_source_chat_and_reuses_vectors_without_original(self):
+        a, document, entries, library = self.publish_fixture()
+        b = self.chat()
+        Path(document['sourcePath']).unlink()
+        image = Path(self.repo.load_chat(dict(chatId=a))['documents'][0]['blocks'][0]['imagePath'])
+        self.repo.delete_chat(dict(chatId=a, currentChatId=b))
+        self.assertTrue(image.is_file())
+        self.assertEqual(self.repo.load_chat(dict(chatId=b))['entries'], [])
+        listed = self.repo.dispatch('list_library', {})['items']
+        self.assertEqual([r['id'] for r in listed], [library])
+        self.assertTrue(listed[0]['compatible'])
+        attached = self.repo.dispatch('attach_library_documents', dict(chatId=b, libraryIds=[library]))['documents'][0]
+        self.assertNotIn(attached['id'], (library, document['id']))
+        loaded = self.repo.load_chat(dict(chatId=b))
+        self.assertEqual(loaded['entries'][0]['embedding'], entries[0]['embedding'])
+        self.assertEqual(loaded['entries'][0]['chunk']['documentId'], attached['id'])
+        self.assertEqual(loaded['documents'][0]['status'], 'Ready')
+        again = self.repo.dispatch('attach_library_documents', dict(chatId=b, libraryIds=[library]))['documents'][0]
+        self.assertEqual(again, dict(id=attached['id'], existing=True))
+        duplicate = self.repo.dispatch('publish_library_document', dict(chatId=b, documentId=attached['id']))
+        self.assertEqual(duplicate, dict(id=library, existing=True))
+        self.repo.dispatch('delete_library_document', dict(id=library))
+        self.assertEqual(self.repo.load_chat(dict(chatId=b)), loaded)
+        self.assertTrue(image.is_file())
+        self.repo.delete_chat(dict(chatId=b))
+        self.assertFalse(image.exists())
+
+    def test_library_snapshots_are_immutable_and_conflicts_are_atomic(self):
+        a, document, entries, old = self.publish_fixture()
+        document['text'] = 'Новая редакция: 8.0 bar'
+        document['blocks'][0]['text'] = document['text']
+        entries[0]['chunk']['text'] = document['text']
+        self.repo.save_document(dict(chatId=a, document=copy.deepcopy(document), entries=entries))
+        new = self.repo.dispatch('publish_library_document', dict(chatId=a, documentId=document['id']))['id']
+        self.assertNotEqual(old, new)
+        b = self.chat()
+        with self.assertRaises(ValueError):
+            self.repo.dispatch('attach_library_documents', dict(chatId=b, libraryIds=[old, new]))
+        self.assertEqual(self.repo.load_chat(dict(chatId=b))['documents'], [])
+        self.repo.dispatch('attach_library_documents', dict(chatId=b, libraryIds=[old]))
+        self.assertIn('7.5 bar', self.repo.load_chat(dict(chatId=b))['documents'][0]['text'])
+        self.repo.dispatch('delete_library_document', dict(id=old))
+        self.assertEqual(self.repo.load_chat(dict(chatId=a))['documents'][0]['text'], document['text'])
+        self.assertIn('7.5 bar', self.repo.load_chat(dict(chatId=b))['documents'][0]['text'])
+
+    def test_library_rejects_partial_incompatible_missing_and_foreign_documents(self):
+        a, document, entries, library = self.publish_fixture()
+        b = self.chat()
+        for operation, params in [('publish_library_document', dict(chatId=b, documentId=document['id'])),
+                                  ('attach_library_documents', dict(chatId=b, libraryIds=[document['id']])),
+                                  ('delete_library_document', dict(id=document['id']))]:
+            with self.subTest(operation=operation), self.assertRaises(ValueError):
+                self.repo.dispatch(operation, params)
+        self.repo.connection.execute('UPDATE documents SET pending_images=1 WHERE id=%s', (document['id'],))
+        with self.assertRaises(ValueError):
+            self.repo.dispatch('publish_library_document', dict(chatId=a, documentId=document['id']))
+        self.repo.connection.execute("UPDATE documents SET pipeline_version='old' WHERE id=%s", (library,))
+        self.assertFalse(self.repo.dispatch('list_library', {})['items'][0]['compatible'])
+        with self.assertRaises(ValueError):
+            self.repo.dispatch('attach_library_documents', dict(chatId=b, libraryIds=[library]))
+        from repository import PIPELINE_VERSION
+        self.repo.connection.execute('UPDATE documents SET pipeline_version=%s WHERE id=%s', (PIPELINE_VERSION, library))
+        image = Path(self.repo.load_chat(dict(chatId=a))['documents'][0]['blocks'][0]['imagePath'])
+        image.unlink()
+        with self.assertRaises(ValueError):
+            self.repo.dispatch('attach_library_documents', dict(chatId=b, libraryIds=[library]))
+        self.assertEqual(self.repo.load_chat(dict(chatId=b))['documents'], [])
+
+    def test_library_batch_rolls_back_and_pending_question_prevents_attach(self):
+        a, document, entries, library = self.publish_fixture()
+        b = self.chat()
+        with self.assertRaises(ValueError):
+            self.repo.dispatch('attach_library_documents', dict(chatId=b, libraryIds=[library, str(uuid.uuid4())]))
+        self.assertEqual(self.repo.load_chat(dict(chatId=b))['documents'], [])
+        question = str(uuid.uuid4())
+        self.repo.save_question(dict(id=question, chatId=b, text='Вопрос', title='Вопрос'))
+        with self.assertRaises(ValueError):
+            self.repo.dispatch('attach_library_documents', dict(chatId=b, libraryIds=[library]))
+        for ids in ([], [library] * 2, [str(uuid.uuid4()) for _ in range(21)]):
+            with self.assertRaises(ValueError):
+                self.repo.dispatch('attach_library_documents', dict(chatId=a, libraryIds=ids))
+        self.assertEqual(self.repo.dispatch('list_library', dict(search='%'))['items'], [])
 
     def test_compare_stored_documents_without_originals_and_without_writes(self):
         chat = self.chat()

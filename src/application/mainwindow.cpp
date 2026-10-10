@@ -3,6 +3,7 @@
 #include "ui/documents_widget.hpp"
 #include "ui/document_comparison_dialog.hpp"
 #include "ui/document_tables_dialog.hpp"
+#include "ui/document_library_dialog.hpp"
 #include "ui/chat_widget.hpp"
 #include "ui/sidebar_widget.hpp"
 #include "assistant_service.hpp"
@@ -179,6 +180,15 @@ MainWindow::MainWindow(QWidget *parent) :
         connect(chatManager, &ChatManager::currentChatChanged, tables, &QDialog::close);
         tables->show();
     });
+    const auto openLibrary = [this,service,chatManager](const QString& documentId) {
+        const auto* chat=chatManager->currentChat();
+        if(!chat || !service->storage()->isReady() || !service->isChatReady(chat->id)) return;
+        auto* library=new DocumentLibraryDialog(service,chat->id,documentId,this);
+        connect(chatManager,&ChatManager::currentChatChanged,library,&QDialog::close);
+        library->show();
+    };
+    connect(documentsPage,&DocumentsWidget::libraryRequested,this,[openLibrary](){openLibrary({});});
+    connect(documentsPage,&DocumentsWidget::publishLibraryRequested,this,openLibrary);
     connect(service->imports(), &DocumentImportQueue::changed, this, updateImports);
     connect(chatManager, &ChatManager::currentChatChanged, this, updateImports);
     connect(documentsPage, &DocumentsWidget::importActionRequested, service->imports(), &DocumentImportQueue::control);

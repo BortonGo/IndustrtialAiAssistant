@@ -38,6 +38,7 @@ class AssistantService final : public QObject {
     VectorStore::InMemoryVectorStore visibleIndex_;
     QString visibleChatId_;
     bool loadingChat_ = false;
+    bool attachingLibrary_ = false;
     quint64 selectionVersion_ = 0;
     std::vector<Chunk> chunks_;
     QString indexingDocumentId_;
@@ -116,6 +117,7 @@ public:
     void activateChat(const QString& chatId, std::function<void(const QString&)> callback);
     void forgetChat(const QString& chatId);
     void loadDocument(const QString& path);
+    void attachLibraryDocuments(const QString& chatId, const QStringList& ids, std::function<void(const QString&)> callback);
     void cancelDocument();
     DocumentManager* documentManager() const;
 
@@ -148,7 +150,7 @@ private:
     void prepareConversation(const QJsonObject& data);
     void searchQuestion();
     void continuePendingQuestion();
-    void reloadImportedDocuments(const QString& chatId);
+    void reloadImportedDocuments(const QString& chatId, std::function<void(const QString&)> callback = {});
     void prepareNextAttachment();
     void bindAttachment(const QString& documentId);
     void failAttachment(const QString& error);

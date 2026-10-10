@@ -25,10 +25,14 @@ signals:
     void importActionRequested(const QString& id, const QString& action);
     void compareRequested(const QStringList& documentIds);
     void tablesRequested(const QString& documentId);
+    void libraryRequested();
+    void publishLibraryRequested(const QString& documentId);
 private:
     QListView* documents_ = nullptr;
     QPushButton* compare_ = nullptr;
     QPushButton* tables_ = nullptr;
+    QPushButton* publish_ = nullptr;
+    QPushButton* library_ = nullptr;
     bool comparisonEnabled_ = false;
     void updateComparisonAction();
     QPushButton* uploadButton_ = nullptr;

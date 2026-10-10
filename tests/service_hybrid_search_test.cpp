@@ -102,6 +102,20 @@ int main(int argc, char** argv) {
         }
         query(QStringLiteral("Как меня зовут?"));
         require(answer.contains(QStringLiteral("Алексей"),Qt::CaseInsensitive) && !answer.contains("17.25"),"Saved memory lost user's name or leaked document facts");
+        const auto documentId=service.documentManager()->documentAt(0)->id;
+        const auto libraryId=storageRequest("publish_library_document",{{"chatId",original},{"documentId",documentId}}).value("id").toString();
+        require(chats.selectChat(empty),"Cannot switch to library target chat");
+        waitFor([&](){return ready() && service.isChatReady(empty);});
+        bool attached=false;
+        service.attachLibraryDocuments(empty,{libraryId},[&](const QString& failure){error=failure;attached=true;});
+        waitFor([&](){return attached && ready();}); check();
+        require(service.documentManager()->documentCount()==1 && service.documentManager()->documentAt(0)->id!=documentId,
+                "Library attachment did not create an isolated chat document");
+        query(QStringLiteral("Какое рабочее давление у UZX-417 по документу? Укажи число и единицу измерения."));
+        require(!hits.empty() && hits[0].chunk.documentId!=documentId && QString(answer).replace(',', '.').contains("17.25"),
+                "Cloned library index lost its evidence or used another chat's IDs");
+        query(QStringLiteral("Как меня зовут?"));
+        require(!answer.contains(QStringLiteral("Алексей"),Qt::CaseInsensitive),"Library transfer copied conversation memory");
         result = 0; std::puts("Real models: exact-code retrieval, comparison, saved-index restoration and chat isolation passed");
     } catch (const std::exception& failure) { std::fprintf(stderr, "FAIL: %s\n", failure.what()); }
     service.stopServers();
