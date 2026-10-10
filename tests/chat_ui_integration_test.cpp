@@ -9,6 +9,7 @@
 #include "ui/ui_style.hpp"
 #include "ui/documents_widget.hpp"
 #include "ui/document_comparison_dialog.hpp"
+#include "ui/document_tables_dialog.hpp"
 #include "documents/document_list_model.hpp"
 #include <QApplication>
 #include <QDir>
@@ -40,6 +41,8 @@
 #include <QTcpServer>
 #include <QTextTable>
 #include <QTableWidget>
+#include <QComboBox>
+#include <QFileDialog>
 #include <stdexcept>
 #include <cstdio>
 
@@ -115,6 +118,9 @@ int main(int argc, char** argv) {
         DocumentsWidget documentsPage(&previewModel);
         documentsPage.setComparisonEnabled(true);
         auto* compareButton = documentsPage.findChild<QPushButton*>("compareDocuments");
+        auto* tablesButton = documentsPage.findChild<QPushButton*>("documentTablesButton");
+        QString tablesDocumentId;
+        QObject::connect(&documentsPage, &DocumentsWidget::tablesRequested, [&](const QString& id) { tablesDocumentId = id; });
         auto* documentList = documentsPage.findChild<QListView*>("chatDocuments");
         auto selectDocument = [&](int row) {
             documentList->selectionModel()->select(previewModel.index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
@@ -124,7 +130,10 @@ int main(int argc, char** argv) {
         auto thirdDocument = secondDocument; thirdDocument.id = "third";
         previewManager.restore({previewDocument, secondDocument, thirdDocument});
         selectDocument(1); require(!compareButton->isEnabled(), "Comparison allowed with one document");
+        require(tablesButton->isEnabled(), "Tables unavailable for a selected ready document");
+        tablesButton->click(); require(tablesDocumentId == "second", "Table viewer has wrong document ID");
         selectDocument(0); require(compareButton->isEnabled(), "Partial text and ready document cannot be compared");
+        require(!tablesButton->isEnabled(), "Tables enabled with ambiguous document selection");
         QStringList comparisonIds;
         QObject::connect(&documentsPage, &DocumentsWidget::compareRequested, [&](const QStringList& ids) { comparisonIds = ids; });
         compareButton->click();
@@ -138,6 +147,7 @@ int main(int argc, char** argv) {
         selectDocument(2); require(!compareButton->isEnabled(), "Comparison allowed with three documents");
         previewManager.restore({previewDocument});
         require(!compareButton->isEnabled() && documentList->selectionModel()->selectedRows().isEmpty(), "Chat reload retained comparison selection");
+        require(!tablesButton->isEnabled(), "Chat reload retained table action");
         QJsonArray importJobs{
             QJsonObject{{"id","import-a"},{"chatId","chat-a"},{"sourcePath","C:/docs/Protocol.pdf"},{"status","running"},{"progress",QStringLiteral("Изображения: 12/50")}},
             QJsonObject{{"id","import-b"},{"chatId","chat-b"},{"sourcePath","C:/docs/Other.docx"},{"status","paused"}}
@@ -625,8 +635,56 @@ int main(int argc, char** argv) {
         waitFor([&]() { return comparison->findChild<QLabel*>("comparisonSummary")->text().contains(QStringLiteral("Не удалось")); });
         require(!comparison->findChild<QPushButton*>("comparisonSwap")->isEnabled(), "Failed comparison allowed swap");
         comparison->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QPointer<DocumentTablesDialog> tableDialog = new DocumentTablesDialog(service.storage(), sourceChat, revisionIds.first(), &window);
+        tableDialog->show();
+        auto* tableSelector = tableDialog->findChild<QComboBox*>("storedTables");
+        auto* exportCsv = tableDialog->findChild<QPushButton*>("exportTableCsv");
+        waitFor([&]() { return exportCsv->isEnabled(); });
+        auto* cells = tableDialog->findChild<QTableView*>("tableCells");
+        require(tableSelector->count() == 1 && cells->model()->rowCount() == 3, "Stored table rows missing");
+        require(cells->model()->index(1,1).data().toString() == "7.5 bar", "Table preview has another revision");
+        tableDialog->findChild<QPushButton*>("tableSource")->click();
+        preview = tableDialog->findChild<QDialog*>("sourcePreview");
+        require(preview && preview->findChild<QTextBrowser*>("sourceExcerpt")->toPlainText().contains("7.5 bar"), "Table source missing");
+        preview->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        tableDialog->grab().save("build-qtcreator/document-tables-preview.png");
+        // Exercise the actual Save dialog and atomic file writer, not a mock slot.
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+        const auto exportedCsv = data.path() + "/exported-table.csv";
+        exportCsv->click();
+        auto* chooser = tableDialog->findChild<QFileDialog*>();
+        require(chooser, "Export did not offer file selection");
+        chooser->selectFile(exportedCsv);
+        QMetaObject::invokeMethod(chooser, "accept", Qt::DirectConnection);
+        waitFor([&]() { return tableDialog->findChild<QLabel*>("tableStatus")->text().contains(QStringLiteral("Сохранено:")); });
+        QFile exported(exportedCsv); require(exported.open(QIODevice::ReadOnly), "Export was not written");
+        const auto csvData = exported.readAll(); exported.close();
+        require(csvData.startsWith("\xef\xbb\xbf") && csvData.contains("7.5 bar"), "CSV encoding or values wrong");
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        const auto exportedXlsx = data.path() + "/exported-table.xlsx";
+        tableDialog->findChild<QPushButton*>("exportTableXlsx")->click();
+        chooser = tableDialog->findChild<QFileDialog*>(); chooser->selectFile(exportedXlsx);
+        QMetaObject::invokeMethod(chooser, "accept", Qt::DirectConnection);
+        waitFor([&]() { return tableDialog->findChild<QLabel*>("tableStatus")->text().contains(exportedXlsx); });
+        QFile xlsx(exportedXlsx); require(xlsx.open(QIODevice::ReadOnly) && xlsx.read(2) == "PK", "XLSX is not a workbook ZIP"); xlsx.close();
+        QString exportFailure;
+        require(!saveTableExport(exportedCsv, {{"data","corrupt!"}}, &exportFailure), "Malformed export was saved");
+        require(exported.open(QIODevice::ReadOnly) && exported.readAll() == csvData, "Failed export overwrote an existing file"); exported.close();
+        tableDialog->resize(820,520); QCoreApplication::processEvents();
+        tableDialog->grab().save("build-qtcreator/document-tables-compact-preview.png");
+        tableDialog->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        tableDialog = new DocumentTablesDialog(service.storage(), sourceChat, docId, &window);
+        tableDialog->show();
+        waitFor([&]() { return tableDialog->findChild<QLabel*>("tableStatus")->text().contains(QStringLiteral("Готовых таблиц")); });
+        require(!tableDialog->findChild<QPushButton*>("exportTableCsv")->isEnabled(), "Empty table list can be exported");
+        tableDialog->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        tableDialog = new DocumentTablesDialog(service.storage(), sourceChat, revisionIds.first(), &window);
+        tableDialog->show(); QCoreApplication::processEvents(); tableDialog->close();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        require(!tableDialog, "Table dialog survived close during request");
+        request(service.storage(), "bootstrap", {});
         service.storage()->stop(); waitFor([&]() { return service.storage()->isStopped(); });
-        qInfo() << "Qt revision comparison, sources, restart, legacy snapshots, images, deletion, navigation, attachments, streaming and layout passed";
+        qInfo() << "Qt table preview, CSV/XLSX saving, revision comparison, sources, restart, deletion, navigation, attachments, streaming and layout passed";
         return 0;
     } catch (const std::exception& error) {
         qCritical() << error.what(); service.storage()->stop();

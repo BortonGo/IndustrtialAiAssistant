@@ -24,9 +24,11 @@ signals:
     void chatPageRequested();
     void importActionRequested(const QString& id, const QString& action);
     void compareRequested(const QStringList& documentIds);
+    void tablesRequested(const QString& documentId);
 private:
     QListView* documents_ = nullptr;
     QPushButton* compare_ = nullptr;
+    QPushButton* tables_ = nullptr;
     bool comparisonEnabled_ = false;
     void updateComparisonAction();
     QPushButton* uploadButton_ = nullptr;

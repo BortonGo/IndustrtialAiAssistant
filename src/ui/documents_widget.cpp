@@ -51,7 +51,9 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
     compare_ = new QPushButton(QStringLiteral("Сравнить два документа"));
     compare_->setObjectName("compareDocuments");
     compare_->setToolTip(QStringLiteral("Выберите два обработанных документа с зажатым Ctrl"));
-    documentActions->addWidget(btnAddDocument); documentActions->addWidget(compare_); documentActions->addStretch();
+    tables_ = new QPushButton(QStringLiteral("Таблицы и экспорт")); tables_->setObjectName("documentTablesButton");
+    tables_->setToolTip(QStringLiteral("Выберите один обработанный документ"));
+    documentActions->addWidget(btnAddDocument); documentActions->addWidget(compare_); documentActions->addWidget(tables_); documentActions->addStretch();
     documentsLayout->addLayout(documentActions);
 
     importsLabel_ = new QLabel(QStringLiteral("Очередь обработки · можно задавать вопросы во время импорта"));
@@ -106,7 +108,7 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
         "}"
     );
     documentsLayout->addWidget(documentListView, 2);
-    auto* selectionHint = new QLabel(QStringLiteral("Для сравнения выберите два документа с зажатым Ctrl. Направление сравнения можно поменять в отчёте."));
+    auto* selectionHint = new QLabel(QStringLiteral("Выберите один документ для просмотра таблиц или два с зажатым Ctrl для сравнения."));
     selectionHint->setWordWrap(true); selectionHint->setStyleSheet("color: #A5A6AA; font-size: 12px;");
     documentsLayout->addWidget(selectionHint);
     connect(documents_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() { updateComparisonAction(); });
@@ -123,6 +125,10 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
         if (ids.size() == 2 && compare_->isEnabled()) emit compareRequested(ids);
     });
     updateComparisonAction();
+    connect(tables_, &QPushButton::clicked, this, [this]() {
+        const auto selected = documents_->selectionModel()->selectedRows();
+        if (tables_->isEnabled() && selected.size() == 1) emit tablesRequested(selected.first().data(Qt::UserRole).toString());
+    });
 
     connect(btnAddDocument, &QPushButton::clicked,
             this, &DocumentsWidget::documentUploadRequested);
@@ -136,9 +142,10 @@ void DocumentsWidget::setComparisonEnabled(bool enabled) {
 
 void DocumentsWidget::updateComparisonAction() {
     const auto selected = documents_->selectionModel()->selectedRows();
-    bool ready = comparisonEnabled_ && selected.size() == 2;
+    bool ready = comparisonEnabled_;
     for (const auto& index : selected) ready = ready && index.data(DocumentListModel::ComparisonReadyRole).toBool();
-    compare_->setEnabled(ready);
+    compare_->setEnabled(ready && selected.size() == 2);
+    tables_->setEnabled(ready && selected.size() == 1);
 }
 
 void DocumentsWidget::setImportJobs(const QJsonArray& jobs, const QString& chatId) {

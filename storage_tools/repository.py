@@ -6,11 +6,14 @@ import os
 import re
 from pathlib import Path
 import uuid
+import base64
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from document_comparison import compare_documents
+from document_tables import collect_tables
+from table_export import export_table
 
 PIPELINE_VERSION = "blocks-v2-image-v2-chunks500-overlap100-utf16"
 PREPROCESSING = "embeddinggemma-raw-text-v1"
@@ -505,13 +508,16 @@ class Repository:
         ids = params.get('documentIds')
         if not isinstance(ids, list) or len(ids) != 2 or ids[0] == ids[1]:
             raise ValueError('Выберите два разных документа одного чата')
+        return compare_documents(*self.read_documents(params['chatId'], ids))
+
+    def read_documents(self, chat_id, ids):
         documents = []
         # One snapshot: an import cannot mix old text with newly replaced blocks.
         with self.connection.transaction():
             self.connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
             for document_id in ids:
                 row = self.connection.execute('SELECT * FROM documents WHERE id=%s AND chat_id=%s',
-                                              (document_id, params['chatId'])).fetchone()
+                                              (document_id, chat_id)).fetchone()
                 if not row:
                     raise ValueError('Документ не найден в выбранном чате')
                 blocks = [r['payload'] for r in self.connection.execute('SELECT payload FROM document_blocks WHERE document_id=%s ORDER BY position', (document_id,))]
@@ -523,11 +529,25 @@ class Repository:
                             warnings.append('Сохранённое изображение недоступно: ' + block['imagePath'])
                 documents.append(dict(id=str(row['id']), sourcePath=row['source_path'], text=row['extracted_text'],
                                       blocks=blocks, pendingImages=row['pending_images'], warnings=warnings))
-        return compare_documents(*documents)
+        return documents
+
+    def document_tables(self, params):
+        document = self.read_documents(params['chatId'], [params['documentId']])[0]
+        return collect_tables(document)
+
+    def export_document_table(self, params):
+        report = self.document_tables(params)
+        if params.get('snapshot') != report['snapshot']:
+            raise ValueError('Данные документа изменились. Обновите список таблиц и повторите экспорт.')
+        data, filename, protected = export_table(report, params['tableId'], params['format'])
+        # Qt writes bytes to the path chosen by the user with QSaveFile. The worker
+        # cannot overwrite files and never exports a newer snapshot silently.
+        return dict(data=base64.b64encode(data).decode('ascii'), filename=filename, protectedCells=protected)
 
     def dispatch(self, method, params):
         if method not in ('bootstrap', 'create_chat', 'delete_chat', 'select_chat', 'question_history', 'save_question', 'save_context', 'finish_question', 'save_document', 'load_chat', 'bind_attachment',
-                          'enqueue_import', 'list_imports', 'start_import', 'update_import', 'checkpoint_import', 'advance_import', 'compare_documents'):
+                          'enqueue_import', 'list_imports', 'start_import', 'update_import', 'checkpoint_import', 'advance_import', 'compare_documents',
+                          'document_tables', 'export_document_table'):
             raise ValueError("Неизвестная операция хранилища")
         return getattr(self, method)(params)
 

@@ -2,5 +2,6 @@
     <qresource prefix="/icons">
         <file alias="logo-dark.svg">icons/logo-dark.svg</file>
         <file alias="logo-light.svg">icons/logo-light.svg</file>
+        <file alias="chevron-down.svg">icons/chevron-down.svg</file>
     </qresource>
 </RCC>

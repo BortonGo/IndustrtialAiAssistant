@@ -1,5 +1,8 @@
 """Integration tests use a new private PostgreSQL cluster, never an existing database."""
 import copy
+import base64
+import csv
+import io
 import json
 from pathlib import Path
 import sys
@@ -110,6 +113,50 @@ class StorageTests(unittest.TestCase):
                 self.repo.compare_documents({'chatId': a, 'documentIds': ids})
         # A failed read-only transaction must not poison subsequent worker operations.
         self.assertEqual(len(self.repo.load_chat({'chatId': a})['documents']), 1)
+
+    def test_table_export_uses_same_snapshot_isolated_from_other_chats(self):
+        a, b = self.chat(), self.chat()
+        document, entries = self.document()
+        document['text'] = 'Код\tДавление\n00017\t7,5 bar'
+        rows = [['Код', 'Давление'], ['00017', '7,5 bar']]
+        document['blocks'] = [dict(type='table', tableRows=rows, pageNumber=4, tableIndex=0)]
+        entries[0]['chunk'] = dict(documentId=document['id'], text=document['text'], startOffset=0)
+        self.repo.save_document(dict(chatId=a, document=document, entries=entries))
+        before = self.repo.load_chat(dict(chatId=a))
+        params = dict(chatId=a, documentId=document['id'])
+        report = self.repo.dispatch('document_tables', params)
+        self.assertEqual(report['tables'][0]['rows'], rows)
+        request = dict(params, snapshot=report['snapshot'], tableId='0:0', format='csv')
+        exported = self.repo.dispatch('export_document_table', request)
+        data = base64.b64decode(exported['data']).decode('utf-8-sig')
+        self.assertEqual(list(csv.reader(io.StringIO(data), delimiter=';')), rows)
+        self.assertEqual(before, self.repo.load_chat(dict(chatId=a)))
+        with self.assertRaises(ValueError): self.repo.document_tables(dict(params, chatId=b))
+        with self.assertRaises(ValueError): self.repo.export_document_table(dict(request, chatId=b))
+        with self.assertRaises(ValueError): self.repo.export_document_table(dict(request, snapshot='stale'))
+        with self.assertRaises(ValueError): self.repo.export_document_table(dict(request, tableId='99:0'))
+        with self.assertRaises(ValueError): self.repo.export_document_table(dict(request, format='html'))
+        # Reindexing between preview and save must never export a different value.
+        document['blocks'][0]['tableRows'][1][1] = '8,0 bar'
+        document['text'] = 'Код\tДавление\n00017\t8,0 bar'; entries[0]['chunk']['text'] = document['text']
+        self.repo.save_document(dict(chatId=a, document=document, entries=entries))
+        with self.assertRaisesRegex(ValueError, 'изменились'): self.repo.export_document_table(request)
+        report = self.repo.document_tables(params)
+        Path(document['sourcePath']).unlink()
+        xlsx = self.repo.export_document_table(dict(request, snapshot=report['snapshot'], format='xlsx'))
+        self.assertTrue(base64.b64decode(xlsx['data']).startswith(b'PK'))
+
+    def test_table_export_preserves_partial_and_recognition_provenance(self):
+        chat = self.chat(); doc, entries = self.document()
+        doc['blocks'][0]['text'] = '| Код | Давление |\n|---|---|\n| 00017 | 7,5 bar |'
+        doc['text'] = doc['blocks'][0]['text']; entries[0]['chunk']['text'] = doc['text']
+        self.repo.save_document(dict(chatId=chat, document=doc, entries=entries))
+        self.repo.connection.execute('UPDATE documents SET pending_images=12 WHERE id=%s', (doc['id'],))
+        report = self.repo.document_tables(dict(chatId=chat, documentId=doc['id']))
+        self.assertTrue(report['partial'])
+        self.assertEqual(report['tables'][0]['origin'], 'recognition')
+        self.assertTrue(Path(report['tables'][0]['reference']['imagePath']).is_file())
+        self.assertTrue(any('12' in w for w in report['warnings']))
 
     def test_missing_saved_image_only_disables_its_document_and_can_recover(self):
         chat = self.chat()

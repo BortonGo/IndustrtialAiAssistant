@@ -2,6 +2,7 @@
 #include "ui_mainwindow.h"
 #include "ui/documents_widget.hpp"
 #include "ui/document_comparison_dialog.hpp"
+#include "ui/document_tables_dialog.hpp"
 #include "ui/chat_widget.hpp"
 #include "ui/sidebar_widget.hpp"
 #include "assistant_service.hpp"
@@ -171,6 +172,13 @@ MainWindow::MainWindow(QWidget *parent) :
         const auto* chat = chatManager->currentChat();
         documentsPage->setImportJobs(service->imports()->jobs(), chat ? chat->id : QString());
     };
+    connect(documentsPage, &DocumentsWidget::tablesRequested, this, [this, service, chatManager](const QString& id) {
+        const auto* chat = chatManager->currentChat();
+        if (!chat || !service->storage()->isReady() || !service->isChatReady(chat->id)) return;
+        auto* tables = new DocumentTablesDialog(service->storage(), chat->id, id, this);
+        connect(chatManager, &ChatManager::currentChatChanged, tables, &QDialog::close);
+        tables->show();
+    });
     connect(service->imports(), &DocumentImportQueue::changed, this, updateImports);
     connect(chatManager, &ChatManager::currentChatChanged, this, updateImports);
     connect(documentsPage, &DocumentsWidget::importActionRequested, service->imports(), &DocumentImportQueue::control);
