@@ -8,6 +8,9 @@ class QListWidget;
 class QTextEdit;
 class QPushButton;
 class QDialog;
+class QJsonObject;
+
+QDialog* showSourcePreview(const QJsonObject& source, QWidget* parent);
 
 // Displays the evidence saved with a question, independent of the current index.
 class SourcePanel : public QWidget {

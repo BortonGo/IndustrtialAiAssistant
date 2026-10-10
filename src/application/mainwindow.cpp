@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "ui/documents_widget.hpp"
+#include "ui/document_comparison_dialog.hpp"
 #include "ui/chat_widget.hpp"
 #include "ui/sidebar_widget.hpp"
 #include "assistant_service.hpp"
@@ -147,6 +148,7 @@ MainWindow::MainWindow(QWidget *parent) :
         chatPage->setSendEnabled(ready && idle);
         chatPage->setUploadEnabled(ready && idle);
         documentsPage->setUploadEnabled(service->storage()->isReady() && chat && service->isChatReady(chat->id));
+        documentsPage->setComparisonEnabled(service->storage()->isReady() && chat && service->isChatReady(chat->id));
         chatPage->setWaitingForAnswer(chat && chatManager->isAwaitingAnswer(chat->id));
     };
     connect(chatManager, &ChatManager::operationChanged, this, updateControls);
@@ -156,6 +158,15 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(service, &AssistantService::busyChanged, this,
             [updateControls](bool) { updateControls(); });
     updateControls();
+    connect(service->storage(), &StorageClient::ready, this, updateControls);
+    connect(service->storage(), &StorageClient::unavailable, this, [updateControls]() { updateControls(); });
+    connect(documentsPage, &DocumentsWidget::compareRequested, this, [this, service, chatManager](const QStringList& ids) {
+        const auto* chat = chatManager->currentChat();
+        if (!chat || !service->storage()->isReady() || !service->isChatReady(chat->id)) return;
+        auto* comparison = new DocumentComparisonDialog(service->storage(), chat->id, ids, this);
+        connect(chatManager, &ChatManager::currentChatChanged, comparison, &QDialog::close);
+        comparison->show();
+    });
     auto updateImports = [service,chatManager,documentsPage]() {
         const auto* chat = chatManager->currentChat();
         documentsPage->setImportJobs(service->imports()->jobs(), chat ? chat->id : QString());

@@ -1,5 +1,6 @@
 #include "documents_widget.hpp"
 #include "ui_style.hpp"
+#include "documents/document_list_model.hpp"
 
 #include <QVBoxLayout>
 #include <QPushButton>
@@ -46,7 +47,12 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
     btnAddDocument->setIcon(UiStyle::icon(UiStyle::Icon::Plus));
     btnAddDocument->setStyleSheet("QPushButton { border: 1px solid #363739; padding: 8px 12px; }");
     uploadButton_ = btnAddDocument;
-    documentsLayout->addWidget(btnAddDocument, 0, Qt::AlignLeft);
+    auto* documentActions = new QHBoxLayout;
+    compare_ = new QPushButton(QStringLiteral("Сравнить два документа"));
+    compare_->setObjectName("compareDocuments");
+    compare_->setToolTip(QStringLiteral("Выберите два обработанных документа с зажатым Ctrl"));
+    documentActions->addWidget(btnAddDocument); documentActions->addWidget(compare_); documentActions->addStretch();
+    documentsLayout->addLayout(documentActions);
 
     importsLabel_ = new QLabel(QStringLiteral("Очередь обработки · можно задавать вопросы во время импорта"));
     importsLabel_->setWordWrap(true);
@@ -74,6 +80,9 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
     setImportJobs({}, {});
 
     QListView* documentListView = new QListView(this);
+    documents_ = documentListView;
+    documents_->setObjectName("chatDocuments");
+    documents_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     documentListView->setModel(model);
     documentListView->setStyleSheet(
         "QListView {"
@@ -97,12 +106,40 @@ DocumentsWidget::DocumentsWidget(QAbstractItemModel* model, QWidget* parent) : Q
         "}"
     );
     documentsLayout->addWidget(documentListView, 2);
+    auto* selectionHint = new QLabel(QStringLiteral("Для сравнения выберите два документа с зажатым Ctrl. Направление сравнения можно поменять в отчёте."));
+    selectionHint->setWordWrap(true); selectionHint->setStyleSheet("color: #A5A6AA; font-size: 12px;");
+    documentsLayout->addWidget(selectionHint);
+    connect(documents_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() { updateComparisonAction(); });
+    connect(model, &QAbstractItemModel::modelReset, this, [this]() { updateComparisonAction(); });
+    connect(model, &QAbstractItemModel::dataChanged, this, [this]() { updateComparisonAction(); });
+    connect(model, &QAbstractItemModel::rowsRemoved, this, [this]() { updateComparisonAction(); });
+    connect(compare_, &QPushButton::clicked, this, [this]() {
+        QStringList ids;
+        // Stable list order, independent of the order of Ctrl-clicks.
+        for (int row = 0; row < documents_->model()->rowCount(); ++row) {
+            const auto index = documents_->model()->index(row, 0);
+            if (documents_->selectionModel()->isSelected(index)) ids.append(index.data(Qt::UserRole).toString());
+        }
+        if (ids.size() == 2 && compare_->isEnabled()) emit compareRequested(ids);
+    });
+    updateComparisonAction();
 
     connect(btnAddDocument, &QPushButton::clicked,
             this, &DocumentsWidget::documentUploadRequested);
 }
 
 void DocumentsWidget::setUploadEnabled(bool enabled) { uploadButton_->setEnabled(enabled); }
+
+void DocumentsWidget::setComparisonEnabled(bool enabled) {
+    comparisonEnabled_ = enabled; updateComparisonAction();
+}
+
+void DocumentsWidget::updateComparisonAction() {
+    const auto selected = documents_->selectionModel()->selectedRows();
+    bool ready = comparisonEnabled_ && selected.size() == 2;
+    for (const auto& index : selected) ready = ready && index.data(DocumentListModel::ComparisonReadyRole).toBool();
+    compare_->setEnabled(ready);
+}
 
 void DocumentsWidget::setImportJobs(const QJsonArray& jobs, const QString& chatId) {
     const auto selected = importsList_->currentItem() ? importsList_->currentItem()->data(Qt::UserRole).toString() : QString();

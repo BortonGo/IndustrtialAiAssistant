@@ -23,7 +23,7 @@ DocumentListModel::DocumentListModel(DocumentManager* manager, QObject* parent)
             auto* document = manager_->documentAt(row);
             if (document->id == documentId) {
                 const QModelIndex idx = index(row, 0);
-                emit dataChanged(idx, idx, {Qt::DisplayRole});
+                emit dataChanged(idx, idx, {Qt::DisplayRole, ComparisonReadyRole});
                 break;
             }
         }
@@ -52,6 +52,9 @@ QVariant DocumentListModel::data(const QModelIndex& index, int role) const {
         return QFileInfo(document->sourcePath).fileName() + " · " + Document::statusToQString(document->status);
     } else if (role == Qt::UserRole) {
         return document->id;
+    } else if (role == ComparisonReadyRole) {
+        return document->status == DocumentStatus::Ready || document->status == DocumentStatus::ReadyWithWarnings ||
+               document->status == DocumentStatus::TextReady;
     } else if (role == Qt::ToolTipRole) {
         return document->sourcePath + (document->pendingImages ? QStringLiteral("\nТекст доступен для вопросов. Не распознано изображений: %1").arg(document->pendingImages) : QString()) + (document->warnings.isEmpty() ? QString() :
                                       "\n" + document->warnings.join("\n"));

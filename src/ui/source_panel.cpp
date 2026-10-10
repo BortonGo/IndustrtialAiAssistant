@@ -94,16 +94,21 @@ void SourcePanel::setSources(const QString& question, const QString& snapshot, c
 void SourcePanel::openSource(int index) {
     if (index < 0 || index >= references_.size()) return;
     if (preview_) preview_->close();
-    const auto source = references_[index].toObject();
+    preview_ = showSourcePreview(references_[index].toObject(), this);
+}
+
+QDialog* showSourcePreview(const QJsonObject& source, QWidget* parent) {
     const auto path = source.value("sourcePath").toString();
-    auto* dialog = new QDialog(this); preview_ = dialog;
+    auto* dialog = new QDialog(parent);
     dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->setObjectName("sourcePreview");
-    dialog->setWindowTitle(QStringLiteral("Источник [%1] — %2").arg(source.value("number").toInt()).arg(QFileInfo(path).fileName()));
+    dialog->setWindowTitle(source.contains("number") ?
+        QStringLiteral("Источник [%1] — %2").arg(source.value("number").toInt()).arg(QFileInfo(path).fileName()) :
+        QStringLiteral("Источник — %1").arg(QFileInfo(path).fileName()));
     dialog->resize(860, 660); dialog->setMinimumSize(520, 360);
     auto* layout = new QVBoxLayout(dialog); layout->setContentsMargins(20, 20, 20, 20); layout->setSpacing(12);
     auto* heading = new QLabel(position(source)); heading->setObjectName("sourcePosition");
     heading->setWordWrap(true); heading->setTextFormat(Qt::PlainText); layout->addWidget(heading);
-    auto* note = new QLabel(QStringLiteral("Сохранённый фрагмент на момент ответа. Исходный файл мог измениться."));
+    auto* note = new QLabel(QStringLiteral("Сохранённый фрагмент. Исходный файл мог измениться после обработки."));
     note->setWordWrap(true); note->setStyleSheet("color: #A5A6AA;"); layout->addWidget(note);
     const auto imagePath = source.value("imagePath").toString();
     if (!imagePath.isEmpty()) {
@@ -129,10 +134,11 @@ void SourcePanel::openSource(int index) {
     if (!original->isEnabled()) status->setText(QStringLiteral("Исходный файл недоступен. Сохранённый фрагмент остаётся доступным."));
     actions->addWidget(original); actions->addStretch();
     auto* close = new QPushButton(QStringLiteral("Закрыть")); actions->addWidget(close); layout->addLayout(actions);
-    connect(close, &QPushButton::clicked, dialog, &QDialog::close);
-    connect(original, &QPushButton::clicked, dialog, [path, status]() {
+    QObject::connect(close, &QPushButton::clicked, dialog, &QDialog::close);
+    QObject::connect(original, &QPushButton::clicked, dialog, [path, status]() {
         if (!canOpenOriginal(path) || !QDesktopServices::openUrl(QUrl::fromLocalFile(path)))
             status->setText(QStringLiteral("Не удалось открыть исходный файл."));
     });
     dialog->show();
+    return dialog;
 }

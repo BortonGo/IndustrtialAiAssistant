@@ -66,6 +66,51 @@ class StorageTests(unittest.TestCase):
         self.assertTrue(Path(first['documents'][0]['blocks'][0]['imagePath']).is_file())
         self.assertEqual(second, {'documents': [], 'entries': []})
 
+    def test_compare_stored_documents_without_originals_and_without_writes(self):
+        chat = self.chat()
+        old, entries = self.document()
+        new, new_entries = self.document()
+        new['blocks'][0]['text'] = 'PUMP-417: 8.0 bar'
+        new['text'] = 'PUMP-417: 8.0 bar'
+        new_entries[0]['chunk']['text'] = new['text']
+        for doc, vectors in [(old, entries), (new, new_entries)]:
+            self.repo.save_document({'chatId': chat, 'document': copy.deepcopy(doc), 'entries': vectors})
+            Path(doc['sourcePath']).unlink()
+        original = self.repo.load_chat({'chatId': chat})
+        report = self.repo.dispatch('compare_documents', {'chatId': chat, 'documentIds': [old['id'], new['id']]})
+        self.assertEqual(report['counts'], dict(added=0, removed=0, changed=1))
+        change = report['changes'][0]
+        self.assertEqual(change['before']['documentId'], old['id'])
+        self.assertEqual(change['after']['documentId'], new['id'])
+        self.assertTrue(Path(change['before']['imagePath']).is_file())
+        self.assertIn('7.5 bar', change['before']['text'])
+        self.assertIn('8.0 bar', change['after']['text'])
+        self.assertEqual(self.repo.load_chat({'chatId': chat}), original)
+        self.assertEqual(self.repo.connection.execute('SELECT count(*) AS n FROM messages').fetchone()['n'], 0)
+        # Early native-text snapshots and missing stored images cannot yield a complete report.
+        self.repo.connection.execute('UPDATE documents SET pending_images=3 WHERE id=%s', (new['id'],))
+        partial = self.repo.compare_documents({'chatId': chat, 'documentIds': [old['id'], new['id']]})
+        self.assertTrue(partial['partial'])
+        self.assertTrue(any('3 изображений' in warning for warning in partial['warnings']))
+        self.repo.connection.execute('UPDATE documents SET pending_images=0 WHERE id=%s', (new['id'],))
+        Path(change['before']['imagePath']).unlink()
+        missing = self.repo.compare_documents({'chatId': chat, 'documentIds': [old['id'], new['id']]})
+        self.assertTrue(missing['partial'])
+        self.assertTrue(any('недоступно' in warning for warning in missing['warnings']))
+
+    def test_comparison_rejects_wrong_chat_missing_and_duplicate_ids(self):
+        a, b = self.chat(), self.chat()
+        old, entries = self.document()
+        new, new_entries = self.document()
+        self.repo.save_document({'chatId': a, 'document': old, 'entries': entries})
+        self.repo.save_document({'chatId': b, 'document': new, 'entries': new_entries})
+        for ids in [[], [old['id']], [old['id'], old['id']], [old['id'], new['id']],
+                    [old['id'], str(uuid.uuid4())], [old['id']] * 3]:
+            with self.subTest(ids=ids), self.assertRaises(ValueError):
+                self.repo.compare_documents({'chatId': a, 'documentIds': ids})
+        # A failed read-only transaction must not poison subsequent worker operations.
+        self.assertEqual(len(self.repo.load_chat({'chatId': a})['documents']), 1)
+
     def test_missing_saved_image_only_disables_its_document_and_can_recover(self):
         chat = self.chat()
         damaged, vectors = self.document()

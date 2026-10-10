@@ -41,6 +41,7 @@ add_executable(IndustrialAiAssistant src/main.cpp
     include/llm/completion_stream.hpp src/llm/completion_stream.cpp
     include/ui/attachment_card.hpp src/ui/attachment_card.cpp
     include/ui/source_panel.hpp src/ui/source_panel.cpp
+    include/ui/document_comparison_dialog.hpp src/ui/document_comparison_dialog.cpp
     include/storage/storage_client.hpp src/storage/storage_client.cpp
     include/storage/storage_codec.hpp src/storage/storage_codec.cpp
     src/ui/mainwindow.ui

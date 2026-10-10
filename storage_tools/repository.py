@@ -10,6 +10,7 @@ import uuid
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from document_comparison import compare_documents
 
 PIPELINE_VERSION = "blocks-v2-image-v2-chunks500-overlap100-utf16"
 PREPROCESSING = "embeddinggemma-raw-text-v1"
@@ -500,9 +501,33 @@ class Repository:
                 self.select_chat(params)
             return result
 
+    def compare_documents(self, params):
+        ids = params.get('documentIds')
+        if not isinstance(ids, list) or len(ids) != 2 or ids[0] == ids[1]:
+            raise ValueError('Выберите два разных документа одного чата')
+        documents = []
+        # One snapshot: an import cannot mix old text with newly replaced blocks.
+        with self.connection.transaction():
+            self.connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+            for document_id in ids:
+                row = self.connection.execute('SELECT * FROM documents WHERE id=%s AND chat_id=%s',
+                                              (document_id, params['chatId'])).fetchone()
+                if not row:
+                    raise ValueError('Документ не найден в выбранном чате')
+                blocks = [r['payload'] for r in self.connection.execute('SELECT payload FROM document_blocks WHERE document_id=%s ORDER BY position', (document_id,))]
+                warnings = list(row['warnings'])
+                for block in blocks:
+                    if block.get('imagePath'):
+                        block['imagePath'] = str(self.data / 'images' / Path(block['imagePath']).name)
+                        if not Path(block['imagePath']).is_file():
+                            warnings.append('Сохранённое изображение недоступно: ' + block['imagePath'])
+                documents.append(dict(id=str(row['id']), sourcePath=row['source_path'], text=row['extracted_text'],
+                                      blocks=blocks, pendingImages=row['pending_images'], warnings=warnings))
+        return compare_documents(*documents)
+
     def dispatch(self, method, params):
         if method not in ('bootstrap', 'create_chat', 'delete_chat', 'select_chat', 'question_history', 'save_question', 'save_context', 'finish_question', 'save_document', 'load_chat', 'bind_attachment',
-                          'enqueue_import', 'list_imports', 'start_import', 'update_import', 'checkpoint_import', 'advance_import'):
+                          'enqueue_import', 'list_imports', 'start_import', 'update_import', 'checkpoint_import', 'advance_import', 'compare_documents'):
             raise ValueError("Неизвестная операция хранилища")
         return getattr(self, method)(params)
 

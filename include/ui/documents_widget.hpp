@@ -8,12 +8,14 @@
 class QPushButton;
 class QListWidget;
 class QLabel;
+class QListView;
 
 class DocumentsWidget : public QWidget {
     Q_OBJECT
 public:
     explicit DocumentsWidget(QAbstractItemModel* model, QWidget* parent = nullptr);
     void setUploadEnabled(bool enabled);
+    void setComparisonEnabled(bool enabled);
     void setImportJobs(const QJsonArray& jobs, const QString& chatId);
 
 signals:
@@ -21,7 +23,12 @@ signals:
     void sidebarToggleRequested();
     void chatPageRequested();
     void importActionRequested(const QString& id, const QString& action);
+    void compareRequested(const QStringList& documentIds);
 private:
+    QListView* documents_ = nullptr;
+    QPushButton* compare_ = nullptr;
+    bool comparisonEnabled_ = false;
+    void updateComparisonAction();
     QPushButton* uploadButton_ = nullptr;
     QListWidget* importsList_ = nullptr;
     QLabel* importsLabel_ = nullptr;

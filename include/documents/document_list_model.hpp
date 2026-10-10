@@ -10,6 +10,7 @@ class DocumentListModel : public QAbstractListModel {
     Q_OBJECT
     DocumentManager* manager_;
 public:
+    enum { ComparisonReadyRole = Qt::UserRole + 1 };
     explicit DocumentListModel(DocumentManager* manager, QObject* parent = nullptr);
 
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;

@@ -8,6 +8,7 @@
 #include "ui/server_status_widget.hpp"
 #include "ui/ui_style.hpp"
 #include "ui/documents_widget.hpp"
+#include "ui/document_comparison_dialog.hpp"
 #include "documents/document_list_model.hpp"
 #include <QApplication>
 #include <QDir>
@@ -38,6 +39,7 @@
 #include <QPointer>
 #include <QTcpServer>
 #include <QTextTable>
+#include <QTableWidget>
 #include <stdexcept>
 #include <cstdio>
 
@@ -111,6 +113,31 @@ int main(int argc, char** argv) {
         require(previewModel.data(previewModel.index(0, 0), Qt::ToolTipRole).toString().contains("38"),
                 "Pending image count missing from document tooltip");
         DocumentsWidget documentsPage(&previewModel);
+        documentsPage.setComparisonEnabled(true);
+        auto* compareButton = documentsPage.findChild<QPushButton*>("compareDocuments");
+        auto* documentList = documentsPage.findChild<QListView*>("chatDocuments");
+        auto selectDocument = [&](int row) {
+            documentList->selectionModel()->select(previewModel.index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        };
+        require(!compareButton->isEnabled(), "Comparison allowed with no selection");
+        auto secondDocument = previewDocument; secondDocument.id = "second"; secondDocument.status = DocumentStatus::Ready;
+        auto thirdDocument = secondDocument; thirdDocument.id = "third";
+        previewManager.restore({previewDocument, secondDocument, thirdDocument});
+        selectDocument(1); require(!compareButton->isEnabled(), "Comparison allowed with one document");
+        selectDocument(0); require(compareButton->isEnabled(), "Partial text and ready document cannot be compared");
+        QStringList comparisonIds;
+        QObject::connect(&documentsPage, &DocumentsWidget::compareRequested, [&](const QStringList& ids) { comparisonIds = ids; });
+        compareButton->click();
+        require(comparisonIds == QStringList({"preview", "second"}), "Document comparison order is unstable");
+        documentsPage.setComparisonEnabled(false); require(!compareButton->isEnabled(), "Comparison enabled without storage");
+        documentsPage.setComparisonEnabled(true);
+        previewManager.setDocumentStatus("second", DocumentStatus::Indexing);
+        require(!compareButton->isEnabled(), "Unpublished indexing document can be compared");
+        previewManager.setDocumentStatus("second", DocumentStatus::Ready);
+        require(compareButton->isEnabled(), "Readiness change did not enable comparison");
+        selectDocument(2); require(!compareButton->isEnabled(), "Comparison allowed with three documents");
+        previewManager.restore({previewDocument});
+        require(!compareButton->isEnabled() && documentList->selectionModel()->selectedRows().isEmpty(), "Chat reload retained comparison selection");
         QJsonArray importJobs{
             QJsonObject{{"id","import-a"},{"chatId","chat-a"},{"sourcePath","C:/docs/Protocol.pdf"},{"status","running"},{"progress",QStringLiteral("Изображения: 12/50")}},
             QJsonObject{{"id","import-b"},{"chatId","chat-b"},{"sourcePath","C:/docs/Other.docx"},{"status","paused"}}
@@ -543,8 +570,63 @@ int main(int argc, char** argv) {
                 QUrl::fromLocalFile(photo)).isNull(), "Untrusted Markdown loaded a local resource");
         preview->grab().save("build-qtcreator/source-image-preview.png");
         page->setMessages({}); settleLayout();
+        // Compare real stored revisions through the worker, independently of model servers.
+        QStringList revisionIds;
+        for (int revision = 0; revision < 2; ++revision) {
+            const auto id = QUuid::createUuid().toString().mid(1,36); revisionIds.append(id);
+            const auto path = data.path() + QString("/protocol-v%1.docx").arg(revision + 1);
+            QFile original(path); require(original.open(QIODevice::WriteOnly), "Cannot create revision fixture");
+            original.write("Stored extraction fixture"); original.close();
+            const QString pressure = revision ? "8.0 bar" : "7.5 bar";
+            QJsonArray rows{QJsonArray{QStringLiteral("Поле"),QStringLiteral("Значение")},
+                QJsonArray{QStringLiteral("Давление"),pressure}, QJsonArray{QStringLiteral("Скорость"),revision ? "19200" : "9600"}};
+            if (revision) rows.append(QJsonArray{QStringLiteral("Контроль"),"CRC-16"});
+            QJsonObject revisionDoc{{"id",id},{"sourcePath",path},{"text",pressure},{"warnings",QJsonArray{}},
+                {"blocks",QJsonArray{QJsonObject{{"type","table"},{"tableRows",rows},{"pageNumber",revision ? 8 : 7},{"tableIndex",0}}}}};
+            QJsonObject revisionChunk{{"documentId",id},{"text",pressure},{"startOffset",0}};
+            request(service.storage(), "save_document", {{"chatId",sourceChat},{"document",revisionDoc},
+                {"entries",QJsonArray{QJsonObject{{"chunk",revisionChunk},{"embedding",vector}}}}});
+        }
+        QPointer<DocumentComparisonDialog> comparison = new DocumentComparisonDialog(service.storage(), sourceChat, revisionIds, &window);
+        comparison->show();
+        auto* changes = comparison->findChild<QTableWidget*>("comparisonChanges");
+        auto* swap = comparison->findChild<QPushButton*>("comparisonSwap");
+        waitFor([&]() { return swap->isEnabled(); });
+        require(changes->rowCount() == 3 && comparison->findChild<QLabel*>("comparisonSummary")->text().contains(QStringLiteral("Изменено: 2")), "Wrong revision diff");
+        changes->selectRow(0);
+        comparison->findChild<QPushButton*>("comparisonBefore")->click();
+        preview = comparison->findChild<QDialog*>("sourcePreview");
+        require(preview && preview->findChild<QTextBrowser*>("sourceExcerpt")->toPlainText().contains("7.5 bar"), "Old fragment lost table value");
+        require(preview->findChild<QLabel*>("sourcePosition")->text().contains(QStringLiteral("Страница 7")), "Old source has new page");
+        preview->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        comparison->findChild<QPushButton*>("comparisonAfter")->click();
+        preview = comparison->findChild<QDialog*>("sourcePreview");
+        require(preview && preview->findChild<QTextBrowser*>("sourceExcerpt")->toPlainText().contains("8.0 bar"), "New fragment has old value");
+        preview->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        changes->selectRow(2);
+        require(!comparison->findChild<QPushButton*>("comparisonBefore")->isEnabled(), "Added row invented an old source");
+        comparison->grab().save("build-qtcreator/document-comparison-preview.png");
+        swap->click();
+        require(comparison->findChild<QLabel*>("comparisonFiles")->text().startsWith(QStringLiteral("Было: protocol-v2.docx")), "Swap did not change file labels");
+        require(comparison->findChild<QLabel*>("comparisonSummary")->text().contains(QStringLiteral("Удалено: 1")), "Swap did not invert counts");
+        comparison->resize(860,500); QCoreApplication::processEvents();
+        require(changes->horizontalScrollBar()->maximum() == 0, "Comparison table breaks minimum layout");
+        comparison->grab().save("build-qtcreator/document-comparison-compact-preview.png");
+        comparison->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        // Closing before the asynchronous request completes must not touch deleted widgets.
+        comparison = new DocumentComparisonDialog(service.storage(), sourceChat, revisionIds, &window);
+        comparison->show(); QCoreApplication::processEvents(); comparison->close();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        require(!comparison, "Closed comparison was not destroyed");
+        request(service.storage(), "bootstrap", {});
+        // Cross-chat failure is rendered inline and never produces a report from another chat.
+        comparison = new DocumentComparisonDialog(service.storage(), QUuid::createUuid().toString().mid(1,36), revisionIds, &window);
+        comparison->show();
+        waitFor([&]() { return comparison->findChild<QLabel*>("comparisonSummary")->text().contains(QStringLiteral("Не удалось")); });
+        require(!comparison->findChild<QPushButton*>("comparisonSwap")->isEnabled(), "Failed comparison allowed swap");
+        comparison->close(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         service.storage()->stop(); waitFor([&]() { return service.storage()->isStopped(); });
-        qInfo() << "Qt sources, restart, legacy snapshots, images, deletion, navigation, attachments, streaming and layout passed";
+        qInfo() << "Qt revision comparison, sources, restart, legacy snapshots, images, deletion, navigation, attachments, streaming and layout passed";
         return 0;
     } catch (const std::exception& error) {
         qCritical() << error.what(); service.storage()->stop();
