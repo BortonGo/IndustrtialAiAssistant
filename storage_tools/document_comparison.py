@@ -51,8 +51,11 @@ def units(document):
             image = block.get('imagePath', '')
             origin['imagePath'] = image
             text = block.get('text', '')
+            label = ('[Текст изображения распознан OCR; возможны ошибки]\n'
+                     if block.get('recognitionMethod') == 'windows-ocr'
+                     else '[Описание изображения моделью; возможны ошибки]\n')
             entries.append((('image', Path(image).name, normalized(text)),
-                            '[Описание изображения моделью; возможны ошибки]\n' + text, origin))
+                            label + text, origin))
         else:
             for line in block.get('text', '').splitlines():
                 if not line.strip():

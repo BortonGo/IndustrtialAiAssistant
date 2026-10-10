@@ -206,7 +206,7 @@ class ImageAnalyzer:
         return text, finish == "length"
 
 
-def describe_images(blocks, analyzer, warnings, progress, parallel_requests=1):
+def describe_images(blocks, analyzer, warnings, progress, parallel_requests=1, use_ocr=False):
     if parallel_requests not in (1, 2):
         raise ValueError("Допустимо одно или два параллельных распознавания")
     images = [block for block in blocks if block["type"] == "image"]
@@ -219,13 +219,31 @@ def describe_images(blocks, analyzer, warnings, progress, parallel_requests=1):
     results = {}
     failures = {}
     unavailable = False
+    ocr_available = use_ocr
     completed = 0
     progress(f"Распознавание изображений: 0/{len(images)} · запросов одновременно: {parallel_requests}")
 
     def describe(path):
+        nonlocal ocr_available
+        if ocr_available:
+            from ocr_routing import recognize_text_page
+            details = {}
+            text = recognize_text_page(path, details, Path(path).parent / 'ocr-descriptions')
+            if text:
+                return text, False, 'windows-ocr'
+            if details.get('reason') == 'windows-ocr-unavailable':
+                ocr_available = False
+        if unavailable:
+            raise RuntimeError('Сервер изображений недоступен после предыдущей ошибки')
         if analyzer is None:
             raise RuntimeError("Не подключён mmproj мультимодальной модели")
-        return analyzer.describe(path)
+        text, truncated = analyzer.describe(path)
+        return text, truncated, 'vision'
+
+    def report_progress():
+        ocr_count = sum(occurrences[path] for path, result in results.items() if result[2] == 'windows-ocr')
+        progress(f"Распознавание изображений: {completed}/{len(images)} · запросов одновременно: {parallel_requests}"
+                 + (f" · OCR: {ocr_count}" if use_ocr else ''))
 
     # Only unique images enter the bounded queue; keep document blocks in their original order.
     remaining = iter(occurrences)
@@ -233,19 +251,19 @@ def describe_images(blocks, analyzer, warnings, progress, parallel_requests=1):
         pending = {}
         exhausted = False
         while pending or not exhausted:
-            while not exhausted and not unavailable and len(pending) < parallel_requests:
+            while not exhausted and (not unavailable or ocr_available) and len(pending) < parallel_requests:
                 path = next(remaining, None)
                 if path is None:
                     exhausted = True
                 else:
                     pending[executor.submit(describe, path)] = path
-            if unavailable:
+            if unavailable and not ocr_available:
                 for path in remaining:
                     failures[path] = "Сервер изображений недоступен после предыдущей ошибки"
                     completed += occurrences[path]
                 exhausted = True
             if not pending:
-                progress(f"Распознавание изображений: {completed}/{len(images)} · запросов одновременно: {parallel_requests}")
+                report_progress()
                 break
             finished, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in finished:
@@ -260,17 +278,20 @@ def describe_images(blocks, analyzer, warnings, progress, parallel_requests=1):
                     if not timeout and isinstance(error, (urllib.error.URLError, ConnectionError)):
                         unavailable = True
                 completed += occurrences[path]
-            progress(f"Распознавание изображений: {completed}/{len(images)} · запросов одновременно: {parallel_requests}")
+            report_progress()
 
     for index, block in enumerate(images, 1):
         path = block["imagePath"]
+        block.pop('recognitionMethod', None)
         location = (f"страница {block['pageNumber']}" if block.get("pageNumber")
                     else f"изображение {index}")
         if path in failures:
             block["text"] = ""
             warnings.append(f"{location}: распознавание не выполнено: {failures[path]}")
         else:
-            block["text"], truncated = results[path]
+            block["text"], truncated, method = results[path]
+            if method == 'windows-ocr':
+                block['recognitionMethod'] = method
             if truncated:
                 warnings.append(f"{location}: описание прервано лимитом ответа модели")
 

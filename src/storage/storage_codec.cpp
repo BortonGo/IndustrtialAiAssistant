@@ -14,6 +14,7 @@ QJsonObject documentToJson(const Document& document) {
         if (block.tableRow >= 0) value["tableRow"] = block.tableRow;
         if (block.tableColumn >= 0) value["tableColumn"] = block.tableColumn;
         if (block.type == DocumentBlockType::Image) value["imagePath"] = block.imagePath;
+        if (!block.recognitionMethod.isEmpty()) value["recognitionMethod"] = block.recognitionMethod;
         if (block.type == DocumentBlockType::Table) {
             QJsonArray rows;
             for (const auto& row : block.tableRows) rows.append(QJsonArray::fromStringList(row));

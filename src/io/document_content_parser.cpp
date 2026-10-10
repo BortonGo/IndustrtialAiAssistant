@@ -54,6 +54,12 @@ bool parseDocumentContent(const QByteArray& json, Document& document, QString& e
                 block.type = DocumentBlockType::Image;
                 if (!object.value("imagePath").isString()) return fail("Image path must be a string");
                 block.imagePath = object.value("imagePath").toString();
+                if (object.contains("recognitionMethod")) {
+                    if (!object.value("recognitionMethod").isString()) return fail("Invalid recognition method");
+                    block.recognitionMethod = object.value("recognitionMethod").toString();
+                    if (block.recognitionMethod != "windows-ocr" && block.recognitionMethod != "vision")
+                        return fail("Unknown recognition method");
+                }
                 const QFileInfo image(block.imagePath);
                 if (!image.isAbsolute() || (requireImageFiles && (!image.isFile() || !image.isReadable())))
                     return fail("Image file is unavailable: " + block.imagePath);

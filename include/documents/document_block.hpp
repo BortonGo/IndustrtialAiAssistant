@@ -21,6 +21,7 @@ struct DocumentBlock {
     int tableRow = -1;
     int tableColumn = -1;
     QString section;
+    QString recognitionMethod;
 
     QString indexText() const {
         if (type == DocumentBlockType::Table) {
@@ -31,8 +32,11 @@ struct DocumentBlock {
             }
             return rows.join("\n");
         }
-        if (type == DocumentBlockType::Image && !text.trimmed().isEmpty())
+        if (type == DocumentBlockType::Image && !text.trimmed().isEmpty()) {
+            if (recognitionMethod == "windows-ocr")
+                return QStringLiteral("[Текст изображения распознан OCR; возможны ошибки]\n") + text;
             return QStringLiteral("[Описание изображения моделью; возможны ошибки]\n") + text;
+        }
         return text;
     }
 };

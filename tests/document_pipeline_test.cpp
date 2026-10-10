@@ -112,6 +112,22 @@ int main(int argc, char** argv) {
             }
         }
         auto bad = root;
+        auto ocrRoot = root;
+        auto ocrBlocks = blocks;
+        auto ocrImage = ocrBlocks[1].toObject();
+        ocrImage["recognitionMethod"] = "windows-ocr";
+        ocrBlocks[1] = ocrImage;
+        ocrRoot["blocks"] = ocrBlocks;
+        const auto ocrText = QStringLiteral("Before\n[Текст изображения распознан OCR; возможны ошибки]\nPUMP-417 pressure 7.5 bar");
+        ocrRoot["text"] = ocrText;
+        const auto ocrDocument = documentFromJson(ocrRoot);
+        check(ocrDocument.blocks[1].recognitionMethod == "windows-ocr", "OCR provenance was lost");
+        const auto restoredOcr = documentFromJson(documentToJson(ocrDocument));
+        check(restoredOcr.text == ocrText && restoredOcr.blocks[1].recognitionMethod == "windows-ocr", "OCR storage roundtrip failed");
+        for (const auto& chunk : DocumentChunker::chunkDocument(restoredOcr, 55, 10))
+            check(chunk.text == ocrText.mid(chunk.startOffset, chunk.text.size()), "OCR chunk offset mismatch");
+        ocrImage["recognitionMethod"] = 10; ocrBlocks[1] = ocrImage; ocrRoot["blocks"] = ocrBlocks;
+        check(!parseDocumentContent(QJsonDocument(ocrRoot).toJson(), document, error), "Invalid OCR method accepted");
         auto preview = QJsonObject{{"text","Native text"},{"blocks",QJsonArray{QJsonObject{{"type","text"},{"text","Native text"}}}},
             {"warnings",QJsonArray()},{"pendingImages",12},{"status","TextReady"}};
         check(documentFromJson(preview).status == DocumentStatus::TextReady, "Preview status lost");

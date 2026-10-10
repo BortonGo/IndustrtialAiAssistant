@@ -7,6 +7,8 @@ def block_text(block):
                          if "\t".join(row).strip())
     text = block.get("text", "")
     if block["type"] == "image" and text.strip():
+        if block.get('recognitionMethod') == 'windows-ocr':
+            return '[Текст изображения распознан OCR; возможны ошибки]\n' + text
         return "[Описание изображения моделью; возможны ошибки]\n" + text
     return text
 

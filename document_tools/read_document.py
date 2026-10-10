@@ -106,7 +106,7 @@ def extract_document(args):
         return {'text': text, 'blocks': native, 'warnings': warnings, 'pendingImages': pending}
     analyzer = (ImageAnalyzer(args.vision_url, "local-chat", args.vision_profile,
                               images / "descriptions", progress=progress) if args.vision_url else None)
-    describe_images(blocks, analyzer, warnings, progress, args.vision_parallel_requests)
+    describe_images(blocks, analyzer, warnings, progress, args.vision_parallel_requests, use_ocr=True)
     text = blocks_to_text(blocks)
     if not text.strip():
         raise ValueError("В документе нет доступного текста; изображения не распознаны. " +

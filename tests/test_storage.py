@@ -101,6 +101,26 @@ class StorageTests(unittest.TestCase):
         self.assertTrue(missing['partial'])
         self.assertTrue(any('недоступно' in warning for warning in missing['warnings']))
 
+    def test_ocr_provenance_survives_storage_reload_and_comparison(self):
+        chat = self.chat()
+        ids = []
+        for text in ('Давление 7,5 бар', 'Давление 8,0 бар'):
+            doc, entries = self.document()
+            doc['blocks'][0].update(text=text, recognitionMethod='windows-ocr')
+            doc['text'] = '[Текст изображения распознан OCR; возможны ошибки]\n' + text
+            entries[0]['chunk']['text'] = doc['text']
+            self.repo.save_document(dict(chatId=chat, document=copy.deepcopy(doc), entries=entries))
+            ids.append(doc['id'])
+            Path(doc['sourcePath']).unlink()
+        loaded = self.repo.load_chat(dict(chatId=chat))
+        for doc in loaded['documents']:
+            self.assertEqual(doc['blocks'][0]['recognitionMethod'], 'windows-ocr')
+            self.assertTrue(Path(doc['blocks'][0]['imagePath']).is_file())
+        report = self.repo.compare_documents(dict(chatId=chat, documentIds=ids))
+        before = report['changes'][0]['before']['text']
+        self.assertIn('распознан OCR', before)
+        self.assertNotIn('моделью', before)
+
     def test_comparison_rejects_wrong_chat_missing_and_duplicate_ids(self):
         a, b = self.chat(), self.chat()
         old, entries = self.document()
