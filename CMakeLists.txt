@@ -174,7 +174,7 @@ if(LOCAL_ASSISTANT_BUILD_TESTS)
     target_link_libraries(document_pipeline_test PRIVATE Qt5::Core)
     add_test(NAME document_pipeline COMMAND document_pipeline_test)
     add_executable(document_context_test tests/document_context_test.cpp src/rag/document_context.cpp
-        src/rag/vector_store.cpp src/llm/context_selection.cpp)
+        src/rag/vector_store.cpp src/llm/context_selection.cpp src/llm/system_status_policy.cpp)
     target_include_directories(document_context_test PRIVATE include include/rag include/llm)
     target_link_libraries(document_context_test PRIVATE Qt5::Core)
     add_test(NAME document_context COMMAND document_context_test)
